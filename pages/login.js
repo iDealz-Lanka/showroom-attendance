@@ -107,7 +107,7 @@ export default function Login() {
       {/* Left panel — brand side (hidden on mobile) */}
       <div style={{ flex:'0 0 45%', background:'#1a6fe8', position:'relative', overflow:'hidden', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:48 }} className="brand-panel">
         {/* Showroom background image */}
-        <div style={{ position:'absolute', inset:0, backgroundImage:'url(/prime.jpeg)', backgroundSize:'cover', backgroundPosition:'center', opacity:0.18 }}/>
+        <div style={{ position:'absolute', inset:0, background:'linear-gradient(135deg,#1456b8,#1a6fe8)', backgroundSize:'cover', backgroundPosition:'center', opacity:0.18 }}/>
         {/* Blue overlay */}
         <div style={{ position:'absolute', inset:0, background:'linear-gradient(135deg, #1456b8 0%, #1a6fe8 50%, #2d7ff9 100%)', opacity:0.92 }}/>
         {/* Pattern overlay */}
@@ -126,9 +126,9 @@ export default function Login() {
           {/* Showroom cards */}
           <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
             {[
-              { name:'Idealz Prime', img:'/prime.jpeg', loc:'Galle Rd, Colombo 4' },
-              { name:'Idealz Liberty Plaza', img:'/liberty.jpg', loc:'R.A. De Mel Mawatha, Colombo 3' },
-              { name:'Idealz Marino', img:'/marino.jpg', loc:'Marino Mall, Colombo 3' },
+              { name:'iDealz Prime', img:'/prime.jpeg', loc:'Galle Rd, Colombo 4' },
+              { name:'iSeven Mobile', img:'/liberty.jpg', loc:'R.A. De Mel Mawatha, Colombo 3' },
+              { name:'iDealz Marino', img:'/marino.jpg', loc:'Marino Mall, Colombo 3' },
             ].map(s=>(
               <div key={s.name} style={{ display:'flex', alignItems:'center', gap:12, padding:'10px 14px', background:'rgba(255,255,255,0.12)', borderRadius:12, backdropFilter:'blur(8px)', border:'1px solid rgba(255,255,255,0.2)', textAlign:'left' }}>
                 <div style={{ width:40, height:40, borderRadius:8, overflow:'hidden', flexShrink:0, border:'2px solid rgba(255,255,255,0.3)' }}>
@@ -237,7 +237,7 @@ export default function Login() {
           )}
 
           <div style={{ textAlign:'center', marginTop:32, fontSize:'0.72rem', color:'#94a3b8' }}>
-            Secured with PIN + Biometrics · iDealz Lanka
+            Secured with PIN + Biometrics
           </div>
         </div>
       </div>
