@@ -5,20 +5,20 @@ import { db } from '../lib/firebase'
 import { collection, getDocs, addDoc, deleteDoc, doc, query, orderBy, where, updateDoc } from 'firebase/firestore'
 import { getSession, clearSession, canViewReports, canManageEmployees, canViewAnalytics, getAllowedShowroom } from '../lib/auth'
 
-const SHOWROOMS = ['Idealz Marino', 'Idealz Liberty Plaza', 'Idealz Prime']
+const SHOWROOMS = ['iDealz Marino', 'iSeven Mobile', 'iDealz Prime']
 const ICONS     = ['🏛️','🏬','🏪']
 const COLORS    = ['#6c63ff','#ff6584','#43e97b','#f7c948','#38b6ff','#ff9a4a','#a78bfa','#34d399']
 const ROLES     = ['employee','manager','admin']
 const ROLE_LABELS = { employee:'Employee', manager:'Manager', admin:'Admin / HR', backoffice:'Back Office' }
 const SHIFTS = {
-  'Idealz Marino':        { showroom:{ start:'10:00', end:'20:00' } },
-  'Idealz Liberty Plaza': { showroom:{ start:'10:00', end:'19:00' } },
-  'Idealz Prime':         { showroom:{ start:'09:45', end:'19:30' }, backoffice:{ start:'09:30', end:'18:30' } },
+  'iDealz Marino':        { showroom:{ start:'10:00', end:'20:00' } },
+  'iSeven Mobile': { showroom:{ start:'10:00', end:'19:00' } },
+  'iDealz Prime':         { showroom:{ start:'09:45', end:'19:30' }, backoffice:{ start:'09:30', end:'18:30' } },
 }
 const SHOWROOM_LOCATIONS = {
-  'Idealz Marino':        { lat: 6.900183,  lng: 79.852234,  radius: 50 },
-  'Idealz Liberty Plaza': { lat: 6.911688,  lng: 79.851517,  radius: 50 },
-  'Idealz Prime':         { lat: 6.8912695, lng: 79.8560961, radius: 50 },
+  'iDealz Marino':        { lat: 6.900183,  lng: 79.852234,  radius: 50 },
+  'iSeven Mobile': { lat: 6.911688,  lng: 79.851517,  radius: 50 },
+  'iDealz Prime':         { lat: 6.8912695, lng: 79.8560961, radius: 50 },
 }
 
 function getDistance(lat1, lng1, lat2, lng2) {
@@ -137,7 +137,7 @@ export default function Home() {
   const [fType, setFType]       = useState('')
   const [newName, setNewName]   = useState('')
   const [newId, setNewId]       = useState('')
-  const [newRoom, setNewRoom]   = useState('Idealz Marino')
+  const [newRoom, setNewRoom]   = useState('iDealz Marino')
   const [newST, setNewST]       = useState('showroom')
   const [newRole, setNewRole]   = useState('employee')
   const [newPin, setNewPin]     = useState('')
@@ -409,7 +409,7 @@ export default function Home() {
     const XL=window.XLSX
     const wb=XL.utils.book_new()
 
-    const SHIFT_MAP={'Idealz Marino':{showroom:['10:00','20:00']},'Idealz Liberty Plaza':{showroom:['10:00','19:00']},'Idealz Prime':{showroom:['09:45','19:30'],backoffice:['09:30','18:30']}}
+    const SHIFT_MAP={'iDealz Marino':{showroom:['10:00','20:00']},'iSeven Mobile':{showroom:['10:00','19:00']},'iDealz Prime':{showroom:['09:45','19:30'],backoffice:['09:30','18:30']}}
     function toMin(t){if(!t||t==='—')return null;const p=t.split(':');return parseInt(p[0])*60+parseInt(p[1])}
     function fmtH(m){if(m==null||m<=0)return'0h 0m';return`${Math.floor(m/60)}h ${m%60}m`}
     function getShiftTimes(showroom,stype='showroom'){const sh=SHIFT_MAP[showroom]||{};return sh[stype]||sh['showroom']||['09:00','18:00']}
@@ -556,8 +556,7 @@ export default function Home() {
 
       <nav className="nav-bar" style={S.nav}>
         <div style={S.brand}>
-          <img src="https://raw.githubusercontent.com/shaAhame/showroom-attendance/main/logo.jpeg" alt="iDealz" style={{height:32,objectFit:'contain'}}/>
-          <span style={{fontSize:'0.78rem',fontWeight:600,color:'#64748b',borderLeft:'1px solid #e2e8f0',paddingLeft:10,marginLeft:4}}>Attendance</span>
+          <span style={{fontSize:'0.9rem',fontWeight:700,color:'#0f172a'}}>Attendance</span>
         </div>
         <div className="desktop-tabs" style={S.tabs}>
           <button style={{...S.tab,...(tab==='checkin'?S.tabOn:{})}} onClick={()=>setTab('checkin')}>Check In/Out</button>
@@ -588,21 +587,40 @@ export default function Home() {
         <div className="page-h1" style={S.h1}>{session.role==='employee'?`Hi, ${session.name.split(' ')[0]}! 👋`:'Check In / Out'}</div>
         <div style={S.sub}>{session.role==='employee'?'Tap below to check in or out':'Select showroom → employee → biometric'}</div>
 
-        <div className="room-grid" style={S.roomGrid}>
-          {SHOWROOMS.map((s,i)=>{
-            const locked=(session.role==='employee'||session.role==='manager')&&s!==session.showroom
-            const imgs=['https://raw.githubusercontent.com/shaAhame/showroom-attendance/main/IMG_0749.jpeg','https://raw.githubusercontent.com/shaAhame/showroom-attendance/main/liberty.jpg','https://raw.githubusercontent.com/shaAhame/showroom-attendance/main/IMG_4420.jpeg']
+        {/* Showroom selector — employees only see their own showroom */}
+        <div className="room-grid" style={{...S.roomGrid,gridTemplateColumns:session.role==='employee'?'1fr':session.role==='manager'?'1fr':'repeat(3,1fr)'}}>
+          {SHOWROOMS.filter(s=>{
+            if(session.role==='employee') return s===session.showroom
+            if(session.role==='manager') return s===session.showroom
+            return true
+          }).map((s,i)=>{
+            const icons=['🏛️','📱','🏪']
+            const idx=SHOWROOMS.indexOf(s)
+            const isSelected=selRoom===s
+            const checkedIn=stats.byShowroom?.[s]??0
+            // For employee: show their own check-in status
+            const empTodayRec=todayRecs.find(r=>r.empId===session.empId&&r.type==='arrive')
+            const empCheckedIn=session.role==='employee'&&empTodayRec
             return(
-              <div key={s} style={{...S.roomCard,...(selRoom===s?S.roomOn:{}),opacity:locked?0.4:1,cursor:locked?'not-allowed':'pointer'}} onClick={()=>{if(!locked)setSelRoom(s)}}>
-                <div style={{height:90,overflow:'hidden',position:'relative'}}>
-                  <img src={imgs[i]} alt={s} style={{width:'100%',height:'100%',objectFit:'cover'}}/>
-                  <div style={{position:'absolute',inset:0,background:selRoom===s?'rgba(26,111,232,0.15)':'rgba(0,0,0,0.08)'}}/>
-                  {locked&&<div style={{position:'absolute',top:6,right:6,background:'rgba(0,0,0,0.6)',borderRadius:6,padding:'2px 7px',fontSize:'0.65rem',color:'#fff'}}>🔒</div>}
-                  {selRoom===s&&<div style={{position:'absolute',top:6,right:6,background:'#1a6fe8',borderRadius:6,padding:'2px 8px',fontSize:'0.65rem',color:'#fff',fontWeight:600}}>✓ Selected</div>}
-                </div>
-                <div style={{padding:'10px 12px'}}>
-                  <div style={{fontWeight:700,fontSize:'0.82rem',marginBottom:2,color:selRoom===s?'#1a6fe8':'#0f172a'}}>{s}</div>
-                  <div style={{fontSize:'0.68rem',color:'#64748b'}}>{stats.byShowroom?.[s]??0} checked in today</div>
+              <div key={s}
+                style={{...S.roomCard,...(isSelected?S.roomOn:{}),cursor:'pointer',padding:0}}
+                onClick={()=>setSelRoom(s)}>
+                {/* Color header bar instead of photo */}
+                <div style={{height:8,background:isSelected?'#1a6fe8':'#e2e8f0',borderRadius:'14px 14px 0 0',transition:'background .2s'}}/>
+                <div style={{padding:'16px 16px 14px'}}>
+                  <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8}}>
+                    <span style={{fontSize:'1.5rem'}}>{icons[idx]}</span>
+                    {isSelected&&<span style={{fontSize:'0.65rem',color:'#fff',background:'#1a6fe8',padding:'2px 8px',borderRadius:20,fontWeight:600}}>✓ Selected</span>}
+                  </div>
+                  <div style={{fontWeight:700,fontSize:'0.88rem',color:isSelected?'#1a6fe8':'#0f172a',marginBottom:4}}>{s}</div>
+                  {session.role==='employee'
+                    ? <div style={{fontSize:'0.72rem',color:empCheckedIn?'#16a34a':'#64748b',fontWeight:empCheckedIn?600:400}}>
+                        {empCheckedIn?`✅ You checked in at ${empTodayRec.time}`:'Not checked in yet'}
+                      </div>
+                    : <div style={{fontSize:'0.72rem',color:'#64748b'}}>
+                        <span style={{color:'#16a34a',fontWeight:600}}>{checkedIn}</span> checked in today
+                      </div>
+                  }
                 </div>
               </div>
             )
@@ -841,7 +859,7 @@ export default function Home() {
                 <div key={lbl}><div style={S.inputLabel}>{lbl}</div><input type={type} placeholder={ph} value={val} onChange={e=>set(e.target.value)} style={S.adminInput}/></div>
               ))}
               <div><div style={S.inputLabel}>Showroom</div><select value={newRoom} onChange={e=>{setNewRoom(e.target.value);setNewST('showroom')}} style={S.adminInput}>{SHOWROOMS.map(s=><option key={s} value={s}>{s}</option>)}</select></div>
-              <div><div style={S.inputLabel}>Staff Type</div><select value={newST} onChange={e=>setNewST(e.target.value)} style={S.adminInput}><option value="showroom">Showroom Staff</option>{newRoom==='Idealz Prime'&&<option value="backoffice">Back Office</option>}</select></div>
+              <div><div style={S.inputLabel}>Staff Type</div><select value={newST} onChange={e=>setNewST(e.target.value)} style={S.adminInput}><option value="showroom">Showroom Staff</option>{newRoom==='iDealz Prime'&&<option value="backoffice">Back Office</option>}</select></div>
               <div><div style={S.inputLabel}>Role / Access Level</div><select value={newRole} onChange={e=>setNewRole(e.target.value)} style={S.adminInput}><option value="employee">Employee — Check in/out only</option><option value="manager">Manager — See showroom reports</option><option value="admin">Admin / HR — Full access</option></select></div>
               <div><div style={S.inputLabel}>PIN (4–6 digits)</div><input type="password" inputMode="numeric" placeholder="e.g. 1234" value={newPin} onChange={e=>setNewPin(e.target.value.replace(/\D/g,'').slice(0,6))} maxLength={6} style={S.adminInput}/></div>
               <div style={{fontSize:'0.7rem',padding:'8px 12px',background:'#e8f1fd',borderRadius:8,color:'#1456b8'}}>⏰ Shift: {getShift(newRoom,newST).start} – {getShift(newRoom,newST).end}</div>
