@@ -114,25 +114,21 @@ export default function Login() {
         <div style={{ position:'absolute', inset:0, backgroundImage:'radial-gradient(circle at 20% 20%, rgba(255,255,255,0.08) 0%, transparent 50%), radial-gradient(circle at 80% 80%, rgba(255,255,255,0.05) 0%, transparent 50%)' }}/>
 
         <div style={{ position:'relative', zIndex:1, textAlign:'center', maxWidth:360 }}>
-          {/* Logo */}
-          <div style={{ marginBottom:32 }}>
-            <img src="https://raw.githubusercontent.com/shaAhame/showroom-attendance/main/logo.jpeg" alt="iDealz" style={{ height:56, objectFit:'contain', filter:'brightness(0) invert(1)' }}/>
-          </div>
           <h1 style={{ color:'#fff', fontSize:'2rem', fontWeight:800, marginBottom:12, lineHeight:1.2 }}>Attendance System</h1>
           <p style={{ color:'rgba(255,255,255,0.75)', fontSize:'1rem', lineHeight:1.6, marginBottom:40 }}>
-            Secure biometric attendance tracking for all Idealz showrooms
+            Secure biometric attendance tracking for all branches
           </p>
 
           {/* Showroom cards */}
           <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
             {[
-              { name:'Idealz Prime', img:'/prime.jpeg', loc:'Galle Rd, Colombo 4' },
-              { name:'Idealz Liberty Plaza', img:'/liberty.jpg', loc:'R.A. De Mel Mawatha, Colombo 3' },
-              { name:'Idealz Marino', img:'/marino.jpg', loc:'Marino Mall, Colombo 3' },
+              { name:'iDealz Prime',  icon:'🏪', loc:'Galle Rd, Colombo 4' },
+              { name:'iSeven Mobile',  icon:'📱', loc:'R.A. De Mel Mawatha, Colombo 3' },
+              { name:'iDealz Marino',  icon:'🏛️', loc:'Marino Mall, Colombo 3' },
             ].map(s=>(
               <div key={s.name} style={{ display:'flex', alignItems:'center', gap:12, padding:'10px 14px', background:'rgba(255,255,255,0.12)', borderRadius:12, backdropFilter:'blur(8px)', border:'1px solid rgba(255,255,255,0.2)', textAlign:'left' }}>
-                <div style={{ width:40, height:40, borderRadius:8, overflow:'hidden', flexShrink:0, border:'2px solid rgba(255,255,255,0.3)' }}>
-                  <img src={s.img} alt={s.name} style={{ width:'100%', height:'100%', objectFit:'cover' }}/>
+                <div style={{ width:40, height:40, borderRadius:8, flexShrink:0, background:'rgba(255,255,255,0.15)', border:'1px solid rgba(255,255,255,0.25)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'1.3rem' }}>
+                  {s.icon}
                 </div>
                 <div>
                   <div style={{ color:'#fff', fontSize:'0.82rem', fontWeight:600 }}>{s.name}</div>
@@ -148,10 +144,6 @@ export default function Login() {
       <div style={{ flex:1, background:'#f7f9fc', display:'flex', alignItems:'center', justifyContent:'center', padding:32, minHeight:'100vh' }}>
         <div style={{ width:'100%', maxWidth:400 }}>
 
-          {/* Mobile logo */}
-          <div style={{ textAlign:'center', marginBottom:32, display:'none' }} className="mobile-logo">
-            <img src="https://raw.githubusercontent.com/shaAhame/showroom-attendance/main/logo.jpeg" alt="iDealz" style={{ height:40, objectFit:'contain' }}/>
-          </div>
 
           {/* Step 1: Employee ID */}
           {step==='id'&&(<>
@@ -246,7 +238,6 @@ export default function Login() {
     <style>{`
       @media(max-width:768px) {
         .brand-panel { display:none !important; }
-        .mobile-logo { display:block !important; }
       }
       @keyframes shake{0%,100%{transform:translateX(0)}20%{transform:translateX(-8px)}40%{transform:translateX(8px)}60%{transform:translateX(-5px)}80%{transform:translateX(5px)}}
       @keyframes fadeUp{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
