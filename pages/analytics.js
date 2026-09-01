@@ -4,16 +4,24 @@ import { db } from '../lib/firebase'
 import { collection, getDocs, query, where } from 'firebase/firestore'
 
 const SHOWROOMS = [
-  { key: 'iDealz Marino',       icon: '🏛️' },
-  { key: 'iSeven Mobile', icon: '🏬' },
-  { key: 'iDealz Prime',        icon: '🏪' },
+  { key: 'Idealz Marino',       icon: '🏛️' },
+  { key: 'Idealz Liberty Plaza', icon: '🏬' },
+  { key: 'Idealz Prime',        icon: '🏪' },
 ]
+
+const DISPLAY_NAMES = {
+  'Idealz Marino':        'iDealz Marino',
+  'Idealz Liberty Plaza': 'iSeven Mobile',
+  'Idealz Prime':         'iDealz Prime',
+}
+function dn(showroom)      { return DISPLAY_NAMES[showroom] || showroom || '' }
+function dnShort(showroom) { return dn(showroom).replace('iDealz ','') }
 
 // Shift schedules per location + staff type
 const SHIFTS = {
-  'iDealz Marino':       { showroom:   { start:'10:00', end:'20:00' } },
-  'iSeven Mobile': { showroom:   { start:'10:00', end:'19:00' } },
-  'iDealz Prime':        { showroom:   { start:'09:45', end:'19:30' },
+  'Idealz Marino':       { showroom:   { start:'10:00', end:'20:00' } },
+  'Idealz Liberty Plaza': { showroom:   { start:'10:00', end:'19:00' } },
+  'Idealz Prime':        { showroom:   { start:'09:45', end:'19:30' },
                            backoffice: { start:'09:30', end:'18:30' } },
 }
 function getShift(showroom, staffType='showroom') {
@@ -232,7 +240,7 @@ export default function Analytics() {
                 return (
                   <tr key={emp.id} style={S.tr}>
                     <td style={S.td}>{emp.name}</td>
-                    <td style={S.td}>{badge(emp.showroom.replace('Idealz ',''),'info')} {emp.staffType==='backoffice'&&<span style={{marginLeft:4,fontSize:10,background:'#FAEEDA',color:'#854F0B',padding:'1px 6px',borderRadius:3}}>Back Office</span>}</td>
+                    <td style={S.td}>{badge(dnShort(emp.showroom),'info')} {emp.staffType==='backoffice'&&<span style={{marginLeft:4,fontSize:10,background:'#FAEEDA',color:'#854F0B',padding:'1px 6px',borderRadius:3}}>Back Office</span>}</td>
                     <td style={S.td}>{statusBadge(s)}</td>
                     <td style={{ ...S.td, color: s?.lateBy > 0 ? '#BA7517' : 'var(--color-text-primary)' }}>{s ? toStr(s.arrive) : '—'}</td>
                     <td style={{ ...S.td, color: s?.earlyExit > 0 ? '#D85A30' : 'var(--color-text-primary)' }}>{s ? toStr(s.depart) : '—'}</td>
@@ -475,7 +483,7 @@ export default function Analytics() {
                     <tr key={emp.id} style={S.tr}>
                       <td style={{...S.td,fontWeight:500}}>{emp.name}</td>
                       <td style={S.td}>
-                        {badge(emp.showroom.replace('Idealz ',''),'info')}
+                        {badge(dnShort(emp.showroom),'info')}
                         {emp.staffType==='backoffice'&&<span style={{marginLeft:4,fontSize:10,background:'#FAEEDA',color:'#854F0B',padding:'1px 6px',borderRadius:3}}>Back Office</span>}
                       </td>
                       <td style={{...S.td,color:'var(--color-text-secondary)'}}>{countableDays.length}</td>
@@ -514,7 +522,7 @@ export default function Analytics() {
             })
             return (
               <div key={sh.key} style={{ ...S.section, padding:16 }}>
-                <div style={{ fontSize:13, fontWeight:600, marginBottom:10, color:'var(--color-text-primary)' }}>{sh.icon} {sh.key}</div>
+                <div style={{ fontSize:13, fontWeight:600, marginBottom:10, color:'var(--color-text-primary)' }}>{sh.icon} {dn(sh.key)}</div>
                 <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
                   <div style={S.statRow}><span style={{color:'var(--color-text-secondary)',fontSize:12}}>Staff (active)</span><span style={{fontWeight:500}}>{shEmps.length}</span></div>
                   <div style={S.statRow}><span style={{color:'var(--color-text-secondary)',fontSize:12}}>Total check-ins</span><span style={{fontWeight:500,color:'#1D9E75'}}>{present}</span></div>
