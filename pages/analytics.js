@@ -4,16 +4,16 @@ import { db } from '../lib/firebase'
 import { collection, getDocs, query, where } from 'firebase/firestore'
 
 const SHOWROOMS = [
-  { key: 'Idealz Marino',       icon: '🏛️' },
-  { key: 'Idealz Liberty Plaza', icon: '🏬' },
-  { key: 'Idealz Prime',        icon: '🏪' },
+  { key: 'iDealz Marino',       icon: '🏛️' },
+  { key: 'iSeven Mobile', icon: '🏬' },
+  { key: 'iDealz Prime',        icon: '🏪' },
 ]
 
 // Shift schedules per location + staff type
 const SHIFTS = {
-  'Idealz Marino':       { showroom:   { start:'10:00', end:'20:00' } },
-  'Idealz Liberty Plaza': { showroom:   { start:'10:00', end:'19:00' } },
-  'Idealz Prime':        { showroom:   { start:'09:45', end:'19:30' },
+  'iDealz Marino':       { showroom:   { start:'10:00', end:'20:00' } },
+  'iSeven Mobile': { showroom:   { start:'10:00', end:'19:00' } },
+  'iDealz Prime':        { showroom:   { start:'09:45', end:'19:30' },
                            backoffice: { start:'09:30', end:'18:30' } },
 }
 function getShift(showroom, staffType='showroom') {
