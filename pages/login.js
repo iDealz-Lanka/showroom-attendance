@@ -126,9 +126,9 @@ export default function Login() {
           {/* Showroom cards */}
           <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
             {[
-              { name:'iDealz Prime', img:'/prime.jpeg', loc:'Galle Rd, Colombo 4' },
-              { name:'iSeven Mobile', img:'/liberty.jpg', loc:'R.A. De Mel Mawatha, Colombo 3' },
-              { name:'iDealz Marino', img:'/marino.jpg', loc:'Marino Mall, Colombo 3' },
+              { name:'Idealz Prime', img:'/prime.jpeg', loc:'Galle Rd, Colombo 4' },
+              { name:'Idealz Liberty Plaza', img:'/liberty.jpg', loc:'R.A. De Mel Mawatha, Colombo 3' },
+              { name:'Idealz Marino', img:'/marino.jpg', loc:'Marino Mall, Colombo 3' },
             ].map(s=>(
               <div key={s.name} style={{ display:'flex', alignItems:'center', gap:12, padding:'10px 14px', background:'rgba(255,255,255,0.12)', borderRadius:12, backdropFilter:'blur(8px)', border:'1px solid rgba(255,255,255,0.2)', textAlign:'left' }}>
                 <div style={{ width:40, height:40, borderRadius:8, overflow:'hidden', flexShrink:0, border:'2px solid rgba(255,255,255,0.3)' }}>
@@ -187,7 +187,7 @@ export default function Login() {
               </div>
               <div>
                 <div style={{ fontSize:'0.95rem', fontWeight:600, color:'#0f172a' }}>{employee?.name}</div>
-                <div style={{ fontSize:'0.75rem', color:'#64748b' }}>{employee?.showroom?.replace('Idealz ','')} · {employee?.staffType==='backoffice'?'Back Office':'Showroom Staff'}</div>
+                <div style={{ fontSize:'0.75rem', color:'#64748b' }}>{({'Idealz Marino':'iDealz Marino','Idealz Liberty Plaza':'iSeven Mobile','Idealz Prime':'iDealz Prime'}[employee?.showroom]||employee?.showroom||'').replace('iDealz ','')} · {employee?.staffType==='backoffice'?'Back Office':'Showroom Staff'}</div>
               </div>
             </div>
 
