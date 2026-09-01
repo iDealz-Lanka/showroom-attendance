@@ -5,20 +5,30 @@ import { db } from '../lib/firebase'
 import { collection, getDocs, addDoc, deleteDoc, doc, query, orderBy, where, updateDoc } from 'firebase/firestore'
 import { getSession, clearSession, canViewReports, canManageEmployees, canViewAnalytics, getAllowedShowroom } from '../lib/auth'
 
-const SHOWROOMS = ['iDealz Marino', 'iSeven Mobile', 'iDealz Prime']
+const SHOWROOMS = ['Idealz Marino', 'Idealz Liberty Plaza', 'Idealz Prime']
+// Display names only — Firebase still stores the keys above. Never change the keys.
+const DISPLAY_NAMES = {
+  'Idealz Marino':        'iDealz Marino',
+  'Idealz Liberty Plaza': 'iSeven Mobile',
+  'Idealz Prime':         'iDealz Prime',
+}
+// Full display name
+function dn(showroom)      { return DISPLAY_NAMES[showroom] || showroom || '' }
+// Short display name (for tabs, table cells, chips)
+function dnShort(showroom) { return dn(showroom).replace('iDealz ','') }
 const ICONS     = ['🏛️','🏬','🏪']
 const COLORS    = ['#6c63ff','#ff6584','#43e97b','#f7c948','#38b6ff','#ff9a4a','#a78bfa','#34d399']
 const ROLES     = ['employee','manager','admin']
 const ROLE_LABELS = { employee:'Employee', manager:'Manager', admin:'Admin / HR', backoffice:'Back Office' }
 const SHIFTS = {
-  'iDealz Marino':        { showroom:{ start:'10:00', end:'20:00' } },
-  'iSeven Mobile': { showroom:{ start:'10:00', end:'19:00' } },
-  'iDealz Prime':         { showroom:{ start:'09:45', end:'19:30' }, backoffice:{ start:'09:30', end:'18:30' } },
+  'Idealz Marino':        { showroom:{ start:'10:00', end:'20:00' } },
+  'Idealz Liberty Plaza': { showroom:{ start:'10:00', end:'19:00' } },
+  'Idealz Prime':         { showroom:{ start:'09:45', end:'19:30' }, backoffice:{ start:'09:30', end:'18:30' } },
 }
 const SHOWROOM_LOCATIONS = {
-  'iDealz Marino':        { lat: 6.900183,  lng: 79.852234,  radius: 50 },
-  'iSeven Mobile': { lat: 6.911688,  lng: 79.851517,  radius: 50 },
-  'iDealz Prime':         { lat: 6.8912695, lng: 79.8560961, radius: 50 },
+  'Idealz Marino':        { lat: 6.900183,  lng: 79.852234,  radius: 50 },
+  'Idealz Liberty Plaza': { lat: 6.911688,  lng: 79.851517,  radius: 50 },
+  'Idealz Prime':         { lat: 6.8912695, lng: 79.8560961, radius: 50 },
 }
 
 function getDistance(lat1, lng1, lat2, lng2) {
@@ -137,7 +147,7 @@ export default function Home() {
   const [fType, setFType]       = useState('')
   const [newName, setNewName]   = useState('')
   const [newId, setNewId]       = useState('')
-  const [newRoom, setNewRoom]   = useState('iDealz Marino')
+  const [newRoom, setNewRoom]   = useState('Idealz Marino')
   const [newST, setNewST]       = useState('showroom')
   const [newRole, setNewRole]   = useState('employee')
   const [newPin, setNewPin]     = useState('')
@@ -409,7 +419,7 @@ export default function Home() {
     const XL=window.XLSX
     const wb=XL.utils.book_new()
 
-    const SHIFT_MAP={'iDealz Marino':{showroom:['10:00','20:00']},'iSeven Mobile':{showroom:['10:00','19:00']},'iDealz Prime':{showroom:['09:45','19:30'],backoffice:['09:30','18:30']}}
+    const SHIFT_MAP={'Idealz Marino':{showroom:['10:00','20:00']},'Idealz Liberty Plaza':{showroom:['10:00','19:00']},'Idealz Prime':{showroom:['09:45','19:30'],backoffice:['09:30','18:30']}}
     function toMin(t){if(!t||t==='—')return null;const p=t.split(':');return parseInt(p[0])*60+parseInt(p[1])}
     function fmtH(m){if(m==null||m<=0)return'0h 0m';return`${Math.floor(m/60)}h ${m%60}m`}
     function getShiftTimes(showroom,stype='showroom'){const sh=SHIFT_MAP[showroom]||{};return sh[stype]||sh['showroom']||['09:00','18:00']}
@@ -444,7 +454,7 @@ export default function Home() {
       const otMin=workMin!=null?workMin-targetMin:null
       const status=!arrive?'Absent':workMin&&workMin<targetMin/2?'Half Day':lateBy>15?'Late':'Present'
       dailyRows.push({
-        Employee:r0.empName,Showroom:r0.showroom?.replace('Idealz ',''),Date:r0.date,
+        Employee:r0.empName,Showroom:dnShort(r0.showroom),Date:r0.date,
         Day:r0.date?new Date(r0.date).toLocaleDateString('en-GB',{weekday:'short'}):'',
         Status:status,'Arrive Time':arrive||'—','Depart Time':depart||'—',
         'Shift Start':shStart,'Shift End':shEnd,
@@ -581,7 +591,7 @@ export default function Home() {
       </nav>
 
       {session.role==='employee'&&<div style={{background:'#e8f1fd',borderBottom:'1px solid #bfdbfe',padding:'8px 24px',fontSize:'0.76rem',color:'#1456b8',textAlign:'center',fontWeight:500}}>👋 Welcome, {session.name} · You can check in and out for yourself only</div>}
-      {session.role==='manager'&&<div style={{background:'#f0f9ff',borderBottom:'1px solid #bae6fd',padding:'8px 24px',fontSize:'0.76rem',color:'#0369a1',textAlign:'center',fontWeight:500}}>👔 Manager view · {session.showroom}</div>}
+      {session.role==='manager'&&<div style={{background:'#f0f9ff',borderBottom:'1px solid #bae6fd',padding:'8px 24px',fontSize:'0.76rem',color:'#0369a1',textAlign:'center',fontWeight:500}}>👔 Manager view · {dn(session.showroom)}</div>}
 
       {tab==='checkin'&&<div className="page-content" style={S.page}>
         <div className="page-h1" style={S.h1}>{session.role==='employee'?`Hi, ${session.name.split(' ')[0]}! 👋`:'Check In / Out'}</div>
@@ -612,7 +622,7 @@ export default function Home() {
                     <span style={{fontSize:'1.5rem'}}>{icons[idx]}</span>
                     {isSelected&&<span style={{fontSize:'0.65rem',color:'#fff',background:'#1a6fe8',padding:'2px 8px',borderRadius:20,fontWeight:600}}>✓ Selected</span>}
                   </div>
-                  <div style={{fontWeight:700,fontSize:'0.88rem',color:isSelected?'#1a6fe8':'#0f172a',marginBottom:4}}>{s}</div>
+                  <div style={{fontWeight:700,fontSize:'0.88rem',color:isSelected?'#1a6fe8':'#0f172a',marginBottom:4}}>{dn(s)}</div>
                   {session.role==='employee'
                     ? <div style={{fontSize:'0.72rem',color:empCheckedIn?'#16a34a':'#64748b',fontWeight:empCheckedIn?600:400}}>
                         {empCheckedIn?`✅ You checked in at ${empTodayRec.time}`:'Not checked in yet'}
@@ -704,12 +714,12 @@ export default function Home() {
 
       {tab==='report'&&canViewReports(session)&&<div className="page-content" style={S.page}>
         <div className="page-h1" style={S.h1}>Reports</div>
-        <div style={S.sub}>{session.role==='manager'?`${session.showroom} only`:'All showrooms'}</div>
+        <div style={S.sub}>{session.role==='manager'?`${dn(session.showroom)} only`:'All showrooms'}</div>
         <div className="filters-row" style={S.filters}>
           {session.role==='admin'&&(
             <select style={{...S.sel,width:'auto',minWidth:130}} value={fRoom} onChange={e=>setFRoom(e.target.value)}>
               <option value="">All Showrooms</option>
-              {SHOWROOMS.map(s=><option key={s} value={s}>{s.replace('Idealz ','')}</option>)}
+              {SHOWROOMS.map(s=><option key={s} value={s}>{dnShort(s)}</option>)}
             </select>
           )}
           <select style={{...S.sel,width:'auto',minWidth:130}} value={fEmp} onChange={e=>setFEmp(e.target.value)}>
@@ -770,7 +780,7 @@ export default function Home() {
                       return(
                         <tr key={gi} style={{borderBottom:'1px solid #f1f5f9',background:gi%2===0?'#fff':'#f8fafc'}}>
                           <td style={{padding:'9px 10px',fontWeight:500,color:'#0f172a',whiteSpace:'nowrap'}}>{g.empName?.split(' ')[0]}</td>
-                          <td style={{padding:'9px 10px',color:'#64748b',fontSize:'0.7rem',whiteSpace:'nowrap'}}>{g.showroom?.replace('Idealz ','')}</td>
+                          <td style={{padding:'9px 10px',color:'#64748b',fontSize:'0.7rem',whiteSpace:'nowrap'}}>{dnShort(g.showroom)}</td>
                           <td style={{padding:'9px 10px'}}>
                             {g.arrive&&<span style={badge('arrive')}>Arrive</span>}
                             {g.depart&&<span style={{...badge('depart'),marginLeft:4}}>Depart</span>}
@@ -808,7 +818,7 @@ export default function Home() {
             </div>
             <input placeholder="🔍 Search name or ID..." value={empSearch} onChange={e=>setEmpSearch(e.target.value)} style={{width:'100%',padding:'9px 12px',background:'#f8fafc',border:'1.5px solid #e2e8f0',borderRadius:8,fontSize:'14px',marginBottom:10,outline:'none',fontFamily:"'Inter',sans-serif",color:'#0f172a'}}/>
             <div style={{display:'flex',gap:6,marginBottom:10,flexWrap:'wrap'}}>
-              {['All',...SHOWROOMS.map(s=>s.replace('Idealz ',''))].map((f,i)=>(
+              {['All',...SHOWROOMS.map(s=>dnShort(s))].map((f,i)=>(
                 <button key={f} onClick={()=>setEmpFilter(i===0?'all':SHOWROOMS[i-1])}
                   style={{padding:'4px 12px',borderRadius:20,border:'1px solid',fontSize:'0.72rem',cursor:'pointer',fontFamily:"'Inter',sans-serif",fontWeight:500,borderColor:empFilter===(i===0?'all':SHOWROOMS[i-1])?'#1a6fe8':'#e2e8f0',background:empFilter===(i===0?'all':SHOWROOMS[i-1])?'#e8f1fd':'#fff',color:empFilter===(i===0?'all':SHOWROOMS[i-1])?'#1a6fe8':'#64748b'}}>
                   {f}
@@ -828,7 +838,7 @@ export default function Home() {
                       <div style={{width:38,height:38,borderRadius:'50%',background:e.color+'22',color:e.color,display:'flex',alignItems:'center',justifyContent:'center',fontWeight:700,fontSize:'0.82rem',flexShrink:0}}>{initials(e.name)}</div>
                       <div style={{flex:1,minWidth:0}}>
                         <div style={{fontSize:'0.85rem',fontWeight:600,color:'#0f172a',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{e.name}</div>
-                        <div style={{fontSize:'0.7rem',color:'#64748b'}}>{e.empId} · {e.showroom?.replace('Idealz ','')} · <span style={{color:roleColor[e.role]||'#64748b',fontWeight:500}}>{ROLE_LABELS[e.role]||e.role}</span></div>
+                        <div style={{fontSize:'0.7rem',color:'#64748b'}}>{e.empId} · {dnShort(e.showroom)} · <span style={{color:roleColor[e.role]||'#64748b',fontWeight:500}}>{ROLE_LABELS[e.role]||e.role}</span></div>
                       </div>
                       <span style={{fontSize:'0.68rem',color:clr,background:clr+'22',padding:'3px 8px',borderRadius:20,whiteSpace:'nowrap',flexShrink:0,fontWeight:500}}>{lbl}</span>
                     </div>
@@ -858,8 +868,8 @@ export default function Home() {
               {[['Full Name',newName,setNewName,'e.g. Mohammed Ali','text'],['Employee ID',newId,setNewId,'e.g. EMP-008','text']].map(([lbl,val,set,ph,type])=>(
                 <div key={lbl}><div style={S.inputLabel}>{lbl}</div><input type={type} placeholder={ph} value={val} onChange={e=>set(e.target.value)} style={S.adminInput}/></div>
               ))}
-              <div><div style={S.inputLabel}>Showroom</div><select value={newRoom} onChange={e=>{setNewRoom(e.target.value);setNewST('showroom')}} style={S.adminInput}>{SHOWROOMS.map(s=><option key={s} value={s}>{s}</option>)}</select></div>
-              <div><div style={S.inputLabel}>Staff Type</div><select value={newST} onChange={e=>setNewST(e.target.value)} style={S.adminInput}><option value="showroom">Showroom Staff</option>{newRoom==='iDealz Prime'&&<option value="backoffice">Back Office</option>}</select></div>
+              <div><div style={S.inputLabel}>Showroom</div><select value={newRoom} onChange={e=>{setNewRoom(e.target.value);setNewST('showroom')}} style={S.adminInput}>{SHOWROOMS.map(s=><option key={s} value={s}>{dn(s)}</option>)}</select></div>
+              <div><div style={S.inputLabel}>Staff Type</div><select value={newST} onChange={e=>setNewST(e.target.value)} style={S.adminInput}><option value="showroom">Showroom Staff</option>{newRoom==='Idealz Prime'&&<option value="backoffice">Back Office</option>}</select></div>
               <div><div style={S.inputLabel}>Role / Access Level</div><select value={newRole} onChange={e=>setNewRole(e.target.value)} style={S.adminInput}><option value="employee">Employee — Check in/out only</option><option value="manager">Manager — See showroom reports</option><option value="admin">Admin / HR — Full access</option></select></div>
               <div><div style={S.inputLabel}>PIN (4–6 digits)</div><input type="password" inputMode="numeric" placeholder="e.g. 1234" value={newPin} onChange={e=>setNewPin(e.target.value.replace(/\D/g,'').slice(0,6))} maxLength={6} style={S.adminInput}/></div>
               <div style={{fontSize:'0.7rem',padding:'8px 12px',background:'#e8f1fd',borderRadius:8,color:'#1456b8'}}>⏰ Shift: {getShift(newRoom,newST).start} – {getShift(newRoom,newST).end}</div>
