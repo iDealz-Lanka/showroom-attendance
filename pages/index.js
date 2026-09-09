@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import Head from 'next/head'
 import { useRouter } from 'next/router'
-import { db } from '../lib/firebase'
+import { db, track } from '../lib/firebase'
 import { collection, getDocs, addDoc, deleteDoc, doc, query, orderBy, where, updateDoc } from 'firebase/firestore'
 import { getSession, clearSession, canViewReports, canManageEmployees, canViewAnalytics, getAllowedShowroom } from '../lib/auth'
 
@@ -251,6 +251,7 @@ export default function Home() {
       const alreadyDone=todayEmpRecs.find(r=>r.type===type)
       if(alreadyDone){
         const label=type==='arrive'?'Arrival':'Departure'
+        track('duplicate_blocked',{ showroom:selRoom, action:type })
         return showToast(`❌ ${emp.name} already recorded ${label} today at ${alreadyDone.time}`,'error')
       }
 
@@ -274,10 +275,14 @@ export default function Home() {
     try {
       const pos=await getCurrentPosition()
       const check=checkInsideShowroom(selRoom,pos.lat,pos.lng)
-      if(!check.allowed){setGpsStatus('fail');showToast(check.message,'error');setTimeout(()=>setGpsStatus(''),3000);return}
+      if(!check.allowed){
+        track('gps_blocked',{ showroom:selRoom, distance:check.distance, action:type })
+        setGpsStatus('fail');showToast(check.message,'error');setTimeout(()=>setGpsStatus(''),3000);return
+      }
       setGpsStatus('ok')
     } catch(e) {
       setGpsStatus('fail')
+      track('gps_failed',{ showroom:selRoom, reason:e.code===1?'permission_denied':e.code===2?'signal_weak':'timeout' })
       if(e.code===1) showToast('❌ Location permission denied. Go to browser Settings → Allow Location.','error')
       else if(e.code===2) showToast('❌ GPS signal weak. Move to an open area and try again.','error')
       else if(e.message&&e.message.includes('timeout')) showToast('❌ GPS timed out. Make sure Location is ON and try again.','error')
@@ -289,10 +294,11 @@ export default function Home() {
     setFpOv(true)
     const ok=await verifyBiometric(emp.empId)
     setFpOv(false); setGpsStatus('')
-    if(!ok) return showToast('Face ID / fingerprint did not match.','error')
+    if(!ok){ track('biometric_failed',{ showroom:selRoom, action:type }); return showToast('Face ID / fingerprint did not match.','error') }
 
     const rec={empId:emp.empId,empName:emp.name,showroom:selRoom,type,date:today(),time:nowTime(),reason:'',duration:0}
     await addDoc(collection(db,'records'),{...rec,createdAt:Date.now()})
+    track(type==='arrive'?'checkin_success':'checkout_success',{ showroom:selRoom, role:session.role })
     setLog(p=>[{...rec,id:Date.now()},...p])
     setTodayRecs(p=>{const n=[...p,rec];computeStats(employees,n);return n})
     showToast(`${type==='arrive'?'✅ Arrived':'🔴 Departed'}: ${emp.name}`)
