@@ -24,6 +24,11 @@ const SHIFTS = {
   'Idealz Prime':        { showroom:   { start:'09:45', end:'19:30' },
                            backoffice: { start:'09:30', end:'18:30' } },
 }
+// Seconds after shift start before an arrival counts as late.
+// 60 = one minute of grace. 0 would be strict to the second,
+// 300 would allow five minutes.
+const GRACE_SEC = 60
+
 function getShift(showroom, staffType='showroom') {
   const sh = SHIFTS[showroom]
   if (!sh) return { start:'09:00', end:'18:00' }
@@ -31,6 +36,13 @@ function getShift(showroom, staffType='showroom') {
 }
 
 function toMin(t) { if (!t) return null; const [h, m] = t.split(':').map(Number); return h * 60 + m }
+// Seconds since midnight — records store HH:MM:SS, shift times store HH:MM
+function toSec(t) { if (!t) return null; const [h,m,s] = t.split(':').map(Number); return h*3600 + m*60 + (s||0) }
+// "+45s" under a minute, "+14m" above it
+function fmtLate(sec) {
+  if (!sec || sec <= 0) return ''
+  return sec < 60 ? `+${sec}s` : `+${Math.floor(sec/60)}m`
+}
 function toStr(m) { if (m == null) return '—'; return `${String(Math.floor(m/60)).padStart(2,'0')}:${String(m%60).padStart(2,'0')}` }
 function fmtHrs(m) { if (!m || m <= 0) return '0h 0m'; return `${Math.floor(m/60)}h ${m%60}m` }
 function today() { return new Date().toISOString().split('T')[0] }
@@ -89,13 +101,17 @@ function deriveStats(empId, dateRecords, showroom, staffType='showroom') {
   const leaveDur = leaveRecs.reduce((a, r) => a + (r.duration || 0), 0)
   const leaveReasons = leaveRecs.map(r => r.reason).filter(Boolean).join(', ')
 
-  const lateBy    = arrive != null && arrive > sMin ? arrive - sMin : 0
+  // Lateness measured in seconds so a single second past the start counts
+  const sSec      = toSec(shift.start)
+  const arrSec    = arrRec ? toSec(arrRec.time) : null
+  const lateSec   = arrSec != null && arrSec > sSec ? arrSec - sSec : 0
+  const lateBy    = Math.floor(lateSec / 60)
   const earlyExit = depart != null && depart < eMin ? eMin - depart : 0
   const workMin   = arrive != null && depart != null ? Math.max(0, depart - arrive - leaveDur) : null
   const shiftMin  = eMin - sMin
   const halfDay   = workMin != null && workMin > 0 && workMin < shiftMin / 2
 
-  return { arrive, depart, lateBy, earlyExit, leaveDur, leaveReasons, workMin, halfDay, sMin, eMin }
+  return { arrive, depart, lateBy, lateSec, earlyExit, leaveDur, leaveReasons, workMin, halfDay, sMin, eMin }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -194,7 +210,7 @@ export default function Analytics() {
         const s = deriveStats(emp.empId, dayRecs, emp.showroom, emp.staffType||'showroom')
         if (!s) return
         if (s.arrive != null) { present++; if (s.workMin) { totalMin += s.workMin; count++ } }
-        if (s.lateBy > 0) late++
+        if (s.lateSec > GRACE_SEC) late++
         if (s.earlyExit > 0) earlyEx++
         if (s.leaveDur > 0) leaves++
         if (s.halfDay) halfDays++
@@ -216,7 +232,7 @@ export default function Analytics() {
   function statusBadge(s) {
     if (!s || s.arrive == null) return badge('Absent','danger')
     if (s.halfDay)  return badge('Half day','warn')
-    if (s.lateBy > 15) return badge('Late','warn')
+    if (s.lateSec > GRACE_SEC) return badge('Late','warn')
     return badge('Present','ok')
   }
 
@@ -224,30 +240,37 @@ export default function Analytics() {
   function DayView() {
     const dayRecs = records.filter(r => r.date === dateStr(curDate))
 
-    // Tag every employee as present or absent for this date
+    // Each employee falls into exactly one bucket for this date
     const tagged = filteredEmps.map(emp => {
       const s = deriveStats(emp.empId, dayRecs, emp.showroom, emp.staffType||'showroom')
-      const isAbsent = !s || s.arrive == null
-      return { emp, s, isAbsent }
+      const cat = (!s || s.arrive == null) ? 'absent'
+                : s.lateSec > GRACE_SEC     ? 'late'
+                : 'ontime'
+      return { emp, s, cat, isAbsent: cat === 'absent' }
     })
-    const presentCount = tagged.filter(t => !t.isAbsent).length
-    const absentCount  = tagged.filter(t =>  t.isAbsent).length
 
-    // Absent first so they are the first thing you see
+    const onTimeCount = tagged.filter(t => t.cat === 'ontime').length
+    const lateCount   = tagged.filter(t => t.cat === 'late').length
+    const absentCount = tagged.filter(t => t.cat === 'absent').length
+
+    // Problems first: absent, then late, then on time
+    const rank = { absent:0, late:1, ontime:2 }
     const shown = tagged
-      .filter(t => dayFilter === 'all' || (dayFilter === 'absent' ? t.isAbsent : !t.isAbsent))
-      .sort((a,b) => (b.isAbsent ? 1 : 0) - (a.isAbsent ? 1 : 0))
+      .filter(t => dayFilter === 'all' || t.cat === dayFilter)
+      .sort((a,b) => rank[a.cat] - rank[b.cat])
 
     const chips = [
-      { k:'all',     label:`All ${tagged.length}`,        bg:'#F1EFE8', col:'#5F5E5A', brd:'#D3D1C7' },
-      { k:'present', label:`Present ${presentCount}`,     bg:'#E1F5EE', col:'#0F6E56', brd:'#9FE1CB' },
-      { k:'absent',  label:`Absent ${absentCount}`,       bg:'#FAECE7', col:'#993C1D', brd:'#F5C4B3' },
+      { k:'all',    label:`All ${tagged.length}`,      bg:'#F1EFE8', col:'#5F5E5A' },
+      { k:'ontime', label:`On time ${onTimeCount}`,    bg:'#E1F5EE', col:'#0F6E56' },
+      { k:'late',   label:`Late ${lateCount}`,         bg:'#FAEEDA', col:'#854F0B' },
+      { k:'absent', label:`Absent ${absentCount}`,     bg:'#FAECE7', col:'#993C1D' },
     ]
 
-    // Name lists for the roll call, alphabetical
+    // Name lists — late sorted worst-first, the rest alphabetical
     const byName = (a,b) => a.emp.name.localeCompare(b.emp.name)
-    const presentList = tagged.filter(t => !t.isAbsent).sort(byName)
-    const absentList  = tagged.filter(t =>  t.isAbsent).sort(byName)
+    const onTimeList = tagged.filter(t => t.cat === 'ontime').sort(byName)
+    const lateList   = tagged.filter(t => t.cat === 'late').sort((a,b) => b.s.lateSec - a.s.lateSec)
+    const absentList = tagged.filter(t => t.cat === 'absent').sort(byName)
 
     // One roll-call column: coloured header + the names beneath it
     function RollCall({ title, people, accent, bg, border, empty }) {
@@ -268,6 +291,9 @@ export default function Analytics() {
                     <span style={{ fontSize:13 }}>{emp.name}</span>
                     <span style={{ fontSize:11, color:'var(--color-text-secondary)', whiteSpace:'nowrap' }}>
                       {dnShort(emp.showroom)}{s && s.arrive != null ? ` · ${toStr(s.arrive)}` : ''}
+                      {s && s.lateSec > GRACE_SEC
+                        ? <strong style={{ color:'#854F0B', marginLeft:6 }}>{fmtLate(s.lateSec)}</strong>
+                        : null}
                     </span>
                   </div>
                 ))}
@@ -280,8 +306,9 @@ export default function Analytics() {
       <>
       {/* Roll call — who is in, who is not */}
       <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(260px,1fr))', gap:12, marginBottom:12 }}>
-        <RollCall title="Present"  people={presentList} accent="#0F6E56" bg="#E1F5EE" border="#9FE1CB" empty="Nobody checked in" />
-        <RollCall title="Absent"   people={absentList}  accent="#993C1D" bg="#FAECE7" border="#F5C4B3" empty="Everyone checked in" />
+        <RollCall title="On time" people={onTimeList} accent="#0F6E56" bg="#E1F5EE" border="#9FE1CB" empty="Nobody on time" />
+        <RollCall title="Late"    people={lateList}   accent="#854F0B" bg="#FAEEDA" border="#FAC775" empty="Nobody late" />
+        <RollCall title="Absent"  people={absentList} accent="#993C1D" bg="#FAECE7" border="#F5C4B3" empty="Everyone checked in" />
       </div>
 
       <div style={S.section}>
@@ -325,9 +352,9 @@ export default function Analytics() {
                     <td style={S.td}>{emp.name}</td>
                     <td style={S.td}>{badge(dnShort(emp.showroom),'info')} {emp.staffType==='backoffice'&&<span style={{marginLeft:4,fontSize:10,background:'#FAEEDA',color:'#854F0B',padding:'1px 6px',borderRadius:3}}>Back Office</span>}</td>
                     <td style={S.td}>{statusBadge(s)}</td>
-                    <td style={{ ...S.td, color: s?.lateBy > 0 ? '#BA7517' : 'var(--color-text-primary)' }}>{s ? toStr(s.arrive) : '—'}</td>
+                    <td style={{ ...S.td, color: s?.lateSec > GRACE_SEC ? '#BA7517' : 'var(--color-text-primary)' }}>{s ? toStr(s.arrive) : '—'}</td>
                     <td style={{ ...S.td, color: s?.earlyExit > 0 ? '#D85A30' : 'var(--color-text-primary)' }}>{s ? toStr(s.depart) : '—'}</td>
-                    <td style={S.td}>{s?.lateBy > 0 ? badge(`+${s.lateBy}m`,'warn') : s ? badge('On time','ok') : '—'}</td>
+                    <td style={S.td}>{s?.lateSec > GRACE_SEC ? badge(fmtLate(s.lateSec),'warn') : s ? badge('On time','ok') : '—'}</td>
                     <td style={S.td}>{s?.earlyExit > 0 ? badge(`-${s.earlyExit}m`,'danger') : '—'}</td>
                     <td style={S.td}>{s?.leaveDur > 0 ? badge(`${s.leaveDur}m`,'info') : '—'}</td>
                     <td style={S.td}>
@@ -392,7 +419,7 @@ export default function Analytics() {
               {filteredEmps.map(emp => {
                 const stats = days.map(d => deriveStats(emp.empId, records.filter(r=>r.date===dateStr(d)), emp.showroom, emp.staffType||'showroom'))
                 const totalMin = stats.reduce((a,s) => a + (s?.workMin||0), 0)
-                const lates    = stats.filter(s=>s?.lateBy>0).length
+                const lates    = stats.filter(s=>s?.lateSec > GRACE_SEC).length
                 const earlyEx  = stats.filter(s=>s?.earlyExit>0).length
                 const leaves   = stats.filter(s=>s?.leaveDur>0).length
                 const halfDays = stats.filter(s=>s?.halfDay).length
@@ -406,7 +433,7 @@ export default function Analytics() {
                           : s.arrive == null
                             ? badge('Abs','danger')
                             : <div>
-                                <div style={{color: s.lateBy>0?'#BA7517':'#1D9E75', fontSize:11, fontWeight:500}}>
+                                <div style={{color: s.lateSec > GRACE_SEC?'#BA7517':'#1D9E75', fontSize:11, fontWeight:500}}>
                                   ↑ {toStr(s.arrive)}
                                 </div>
                                 <div style={{color: s.earlyExit>0?'#D85A30':'#64748b', fontSize:11}}>
@@ -511,7 +538,7 @@ export default function Analytics() {
                       const s = deriveStats(emp.empId, dayRecs, emp.showroom, emp.staffType||'showroom')
                       if(!s) return
                       daysInCount++
-                      if(s.lateBy>0) lateCount++
+                      if(s.lateSec > GRACE_SEC) lateCount++
                     })
                     return { emp, lateCount, absentCount, daysInCount }
                   })
@@ -553,7 +580,7 @@ export default function Analytics() {
                     if (!hasArrive) { absent++; return }
 
                     daysIn++
-                    if (s.lateBy > 0)    late++
+                    if (s.lateSec > GRACE_SEC)    late++
                     if (s.earlyExit > 0) earlyEx++
                     if (s.halfDay)       halfDs++
                     if (s.leaveDur > 0)  leaves++
@@ -600,7 +627,7 @@ export default function Analytics() {
                 if (!hasArrive) return
                 present++
                 if (s.workMin) totalMin += s.workMin
-                if (s.lateBy > 0) lates++
+                if (s.lateSec > GRACE_SEC) lates++
                 if (s.leaveDur > 0) leaves++
               })
             })
