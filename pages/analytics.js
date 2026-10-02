@@ -107,6 +107,7 @@ export default function Analytics() {
   const [records, setRecords] = useState([])
   const [loading, setLoading] = useState(true)
   const [monthSort, setMonthSort] = useState('late') // 'late' | 'absent' | 'name' | 'days'
+  const [dayFilter, setDayFilter] = useState('all')  // 'all' | 'present' | 'absent' | 'late'
   const chartRef = useRef(null)
   const chartInst = useRef(null)
 
@@ -183,17 +184,15 @@ export default function Analytics() {
         : (() => { const y=curDate.getFullYear(),m=curDate.getMonth(),days=new Date(y,m+1,0).getDate(); return Array.from({length:days},(_,i)=>`${y}-${String(m+1).padStart(2,'0')}-${String(i+1).padStart(2,'0')}`) })()
     ).filter(d => d <= todayKPI) // Never count future dates — all days count including weekends
 
-    let present=0, late=0, earlyEx=0, leaves=0, halfDays=0, totalMin=0, count=0
+    let present=0, absent=0, late=0, earlyEx=0, leaves=0, halfDays=0, totalMin=0, count=0
     dates.forEach(d => {
       const dayRecs = records.filter(r => r.date === d)
       filteredEmps.forEach(emp => {
-        // Skip employees with no records (avoids counting duplicate admin accounts)
-        if (!records.some(r => r.empId === emp.empId)) return
+        const hasArrive = dayRecs.some(r => r.empId === emp.empId && r.type === 'arrive')
+        // No arrival record for this date = absent
+        if (!hasArrive) { absent++; return }
         const s = deriveStats(emp.empId, dayRecs, emp.showroom, emp.staffType||'showroom')
         if (!s) return
-        // Only count if employee actually arrived
-        const hasArrive = dayRecs.some(r => r.empId === emp.empId && r.type === 'arrive')
-        if (!hasArrive) return
         if (s.arrive != null) { present++; if (s.workMin) { totalMin += s.workMin; count++ } }
         if (s.lateBy > 0) late++
         if (s.earlyExit > 0) earlyEx++
@@ -202,7 +201,7 @@ export default function Analytics() {
       })
     })
     const avgHrs = count ? Math.round(totalMin / count) : 0
-    return { present, late, earlyEx, leaves, halfDays, avgHrs }
+    return { present, absent, late, earlyEx, leaves, halfDays, avgHrs }
   }
 
   const kpis = emps.length ? computeKPIs() : {}
@@ -224,9 +223,89 @@ export default function Analytics() {
   // ── Day view ───────────────────────────────────────────────────────────────
   function DayView() {
     const dayRecs = records.filter(r => r.date === dateStr(curDate))
+
+    // Tag every employee as present or absent for this date
+    const tagged = filteredEmps.map(emp => {
+      const s = deriveStats(emp.empId, dayRecs, emp.showroom, emp.staffType||'showroom')
+      const isAbsent = !s || s.arrive == null
+      return { emp, s, isAbsent }
+    })
+    const presentCount = tagged.filter(t => !t.isAbsent).length
+    const absentCount  = tagged.filter(t =>  t.isAbsent).length
+
+    // Absent first so they are the first thing you see
+    const shown = tagged
+      .filter(t => dayFilter === 'all' || (dayFilter === 'absent' ? t.isAbsent : !t.isAbsent))
+      .sort((a,b) => (b.isAbsent ? 1 : 0) - (a.isAbsent ? 1 : 0))
+
+    const chips = [
+      { k:'all',     label:`All ${tagged.length}`,        bg:'#F1EFE8', col:'#5F5E5A', brd:'#D3D1C7' },
+      { k:'present', label:`Present ${presentCount}`,     bg:'#E1F5EE', col:'#0F6E56', brd:'#9FE1CB' },
+      { k:'absent',  label:`Absent ${absentCount}`,       bg:'#FAECE7', col:'#993C1D', brd:'#F5C4B3' },
+    ]
+
+    // Name lists for the roll call, alphabetical
+    const byName = (a,b) => a.emp.name.localeCompare(b.emp.name)
+    const presentList = tagged.filter(t => !t.isAbsent).sort(byName)
+    const absentList  = tagged.filter(t =>  t.isAbsent).sort(byName)
+
+    // One roll-call column: coloured header + the names beneath it
+    function RollCall({ title, people, accent, bg, border, empty }) {
+      return (
+        <div style={{ ...S.section, marginBottom:0 }}>
+          <div style={{ padding:'10px 14px', background:bg, borderBottom:`1px solid ${border}`,
+                        display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+            <span style={{ fontSize:13, fontWeight:600, color:accent }}>{title}</span>
+            <span style={{ fontSize:16, fontWeight:600, color:accent }}>{people.length}</span>
+          </div>
+          <div style={{ padding:'10px 14px', maxHeight:280, overflowY:'auto' }}>
+            {people.length === 0
+              ? <div style={{ fontSize:12, color:'var(--color-text-secondary)', padding:'6px 0' }}>{empty}</div>
+              : people.map(({ emp, s }) => (
+                  <div key={emp.id} style={{ display:'flex', alignItems:'baseline', justifyContent:'space-between',
+                                             gap:10, padding:'5px 0',
+                                             borderBottom:'0.5px solid var(--color-border-tertiary)' }}>
+                    <span style={{ fontSize:13 }}>{emp.name}</span>
+                    <span style={{ fontSize:11, color:'var(--color-text-secondary)', whiteSpace:'nowrap' }}>
+                      {dnShort(emp.showroom)}{s && s.arrive != null ? ` · ${toStr(s.arrive)}` : ''}
+                    </span>
+                  </div>
+                ))}
+          </div>
+        </div>
+      )
+    }
+
     return (
+      <>
+      {/* Roll call — who is in, who is not */}
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(260px,1fr))', gap:12, marginBottom:12 }}>
+        <RollCall title="Present"  people={presentList} accent="#0F6E56" bg="#E1F5EE" border="#9FE1CB" empty="Nobody checked in" />
+        <RollCall title="Absent"   people={absentList}  accent="#993C1D" bg="#FAECE7" border="#F5C4B3" empty="Everyone checked in" />
+      </div>
+
       <div style={S.section}>
-        <div style={S.secHead}><span style={S.secTitle}>Employee detail</span><span style={S.secSub}>{dateStr(curDate)}</span></div>
+        <div style={{ ...S.secHead, flexWrap:'wrap', gap:10 }}>
+          <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+            <span style={S.secTitle}>Employee detail</span>
+            <span style={S.secSub}>{dateStr(curDate)}</span>
+          </div>
+          <div style={{ display:'flex', gap:6 }}>
+            {chips.map(ch => {
+              const on = dayFilter === ch.k
+              return (
+                <button key={ch.k} onClick={() => setDayFilter(ch.k)}
+                  style={{ padding:'4px 12px', borderRadius:20, fontSize:12, cursor:'pointer',
+                           fontWeight: on ? 600 : 400,
+                           border:`1px solid ${on ? ch.col : 'var(--color-border-tertiary)'}`,
+                           background: on ? ch.bg : 'transparent',
+                           color: on ? ch.col : 'var(--color-text-secondary)' }}>
+                  {ch.label}
+                </button>
+              )
+            })}
+          </div>
+        </div>
         <div style={{ overflowX:'auto' }}>
           <table style={S.table}>
             <thead><tr>
@@ -235,10 +314,14 @@ export default function Analytics() {
               )}
             </tr></thead>
             <tbody>
-              {filteredEmps.map(emp => {
-                const s = deriveStats(emp.empId, dayRecs, emp.showroom, emp.staffType||'showroom')
+              {shown.length === 0 && (
+                <tr><td colSpan={9} style={{ ...S.td, textAlign:'center', color:'var(--color-text-secondary)', padding:'20px 12px' }}>
+                  {dayFilter === 'absent' ? 'Nobody absent on this date' : 'Nobody present on this date'}
+                </td></tr>
+              )}
+              {shown.map(({ emp, s, isAbsent }) => {
                 return (
-                  <tr key={emp.id} style={S.tr}>
+                  <tr key={emp.id} style={{ ...S.tr, background: isAbsent ? 'rgba(250,236,231,0.45)' : 'transparent' }}>
                     <td style={S.td}>{emp.name}</td>
                     <td style={S.td}>{badge(dnShort(emp.showroom),'info')} {emp.staffType==='backoffice'&&<span style={{marginLeft:4,fontSize:10,background:'#FAEEDA',color:'#854F0B',padding:'1px 6px',borderRadius:3}}>Back Office</span>}</td>
                     <td style={S.td}>{statusBadge(s)}</td>
@@ -278,6 +361,7 @@ export default function Analytics() {
           </table>
         </div>
       </div>
+      </>
     )
   }
 
@@ -596,6 +680,7 @@ export default function Analytics() {
           <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(110px,1fr))', gap:10, marginBottom:16 }}>
             {[
               { l:'Present',      v: kpis.present  ?? '—', c:'#1D9E75' },
+              { l:'Absent',       v: kpis.absent   ?? '—', c: kpis.absent > 0 ? '#993C1D' : '#1D9E75' },
               { l:'Late arrivals',v: kpis.late     ?? '—', c: kpis.late > 0 ? '#BA7517' : '#1D9E75' },
               { l:'Early exits',  v: kpis.earlyEx  ?? '—', c: kpis.earlyEx > 0 ? '#D85A30' : '#1D9E75' },
               { l:'Short leaves', v: kpis.leaves   ?? '—', c:'#185FA5' },
