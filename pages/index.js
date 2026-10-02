@@ -803,7 +803,7 @@ export default function Home() {
           <button style={{...S.tab,...(tab==='checkin'?S.tabOn:{})}} onClick={()=>setTab('checkin')}>Check In/Out</button>
           {canViewReports(session)&&<button style={{...S.tab,...(tab==='report'?S.tabOn:{})}} onClick={()=>setTab('report')}>Reports</button>}
           {canManageEmployees(session)&&<button style={{...S.tab,...(tab==='admin'?S.tabOn:{})}} onClick={()=>setTab('admin')}>Admin</button>}
-          {canViewAnalytics(session)&&<a href="/analytics" style={{...S.tab,textDecoration:'none',display:'flex',alignItems:'center',color:'#64748b'}}>Analytics</a>}
+          {session?.role==='admin'&&<a href="/analytics" style={{...S.tab,textDecoration:'none',display:'flex',alignItems:'center',color:'#64748b'}}>Analytics</a>}
         </div>
         <div style={{display:'flex',alignItems:'center',gap:10}}>
           <div className="desktop-clock" style={{textAlign:'right'}}>
@@ -1277,7 +1277,7 @@ export default function Home() {
           <button className={`bnav-btn${tab==='checkin'?' on':''}`} onClick={()=>setTab('checkin')}><span className="bnav-icon">👤</span><span>Check In</span></button>
           {canViewReports(session)&&<button className={`bnav-btn${tab==='report'?' on':''}`} onClick={()=>setTab('report')}><span className="bnav-icon">📊</span><span>Reports</span></button>}
           {canManageEmployees(session)&&<button className={`bnav-btn${tab==='admin'?' on':''}`} onClick={()=>setTab('admin')}><span className="bnav-icon">👥</span><span>Admin</span></button>}
-          {canViewAnalytics(session)&&<a href="/analytics" className="bnav-btn"><span className="bnav-icon">📈</span><span>Analytics</span></a>}
+          {session?.role==='admin'&&<a href="/analytics" className="bnav-btn"><span className="bnav-icon">📈</span><span>Analytics</span></a>}
           <button className="bnav-btn" onClick={logout} style={{color:'#ef4444'}}><span className="bnav-icon">🚪</span><span>Sign out</span></button>
         </div>
       </div>
