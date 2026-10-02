@@ -86,6 +86,139 @@ function today()   { return new Date().toISOString().split('T')[0] }
 function nowTime() { return new Date().toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'}) }
 function initials(name='') { return name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase() }
 
+/* ── Attendance maths ──────────────────────────────────────────────────────
+   One place for lateness, hours and branch-cover logic, so the on-screen
+   report and the Excel export can never disagree. Mirrors analytics.js. */
+
+// Seconds past shift start before an arrival counts as late.
+// Keep this the same as GRACE_SEC in analytics.js.
+const GRACE_SEC = 60
+// Roles that attendance applies to. Admin/HR is left out so it does not
+// appear as absent every single day.
+const ATT_ROLES = ['employee','manager','backoffice']
+
+// Records store HH:MM:SS, shifts store HH:MM. Seconds matter: without them
+// an arrival at 09:45:59 reads as exactly on time.
+function toSec(t){ if(!t||t==='—')return null; const p=t.split(':').map(Number); return p[0]*3600+p[1]*60+(p[2]||0) }
+function fmtH(m){ if(m==null)return'—'; const n=Math.abs(Math.round(m)); return `${Math.floor(n/60)}h ${n%60}m` }
+// "45s" under a minute, "14m" above it
+function fmtGap(sec){ if(!sec||sec<=0)return'—'; return sec<60?`${sec}s`:`${Math.round(sec/60)}m` }
+
+/* One row per employee per working day, absences included.
+   `room` = '' for all branches.
+
+   Branch filtering happens HERE, per date, not on the records beforehand.
+   A cover day is stored against the branch worked, so filtering records
+   first would hide it and the person would read as absent at home. */
+function buildDayRows(records, employees, room) {
+  const roster = employees.filter(e => ATT_ROLES.includes(e.role||'employee'))
+  // A date counts as a working day only if something was recorded that day.
+  // Walking the calendar instead would mark Poya days, Sundays and closures
+  // as absence for all 30 staff.
+  const dates = [...new Set(records.map(r=>r.date).filter(Boolean))].sort()
+  const rows = []
+
+  dates.forEach(date => {
+    const dayRecs = records.filter(r => r.date === date)
+    roster.forEach(emp => {
+      const recs   = dayRecs.filter(r => r.empId === emp.empId)
+      const arr    = recs.filter(r=>r.type==='arrive').sort((a,b)=>(a.time||'').localeCompare(b.time||''))[0]
+      const dep    = recs.filter(r=>r.type==='depart').sort((a,b)=>(b.time||'').localeCompare(a.time||''))[0]
+      const leaves = recs.filter(r=>r.type==='leave')
+
+      const home = emp.showroom || ''
+      // The day belongs to the branch they clocked IN at. Older records have
+      // no homeShowroom field, so the employee's own branch is the fallback.
+      const workedAt   = arr?.showroom || dep?.showroom || home
+      const departedAt = dep?.showroom || null
+      // Worked somewhere that is not their own branch
+      const covering   = !!(arr||dep) && workedAt !== home
+      // Clocked in at one branch and out at another, same day
+      const moved      = !!(arr && dep && arr.showroom !== dep.showroom)
+
+      if (room && workedAt !== room) return
+
+      // Shift follows the branch actually worked, so cover at Prime is judged
+      // against Prime's 09:45 and not the home branch's 10:00.
+      const shift = getShift(workedAt, emp.staffType||'showroom')
+      const sSec = toSec(shift.start), eSec = toSec(shift.end)
+      const aSec = arr ? toSec(arr.time) : null
+      const dSec = dep ? toSec(dep.time) : null
+
+      const lateSec  = aSec!=null && aSec>sSec ? aSec-sSec : 0
+      const earlySec = dSec!=null && dSec<eSec ? eSec-dSec : 0
+      const leaveMin = leaves.reduce((a,r)=>a+(parseInt(r.duration)||0),0)
+      const leaveRsn = leaves.map(r=>r.reason).filter(Boolean).join('; ')
+
+      const targetMin = Math.round((eSec-sSec)/60)
+      // Departure earlier than arrival means the pair is broken — usually a
+      // past-midnight checkout filed under the previous date.
+      const broken  = aSec!=null && dSec!=null && dSec < aSec
+      const workMin = (aSec!=null && dSec!=null && !broken)
+        ? Math.max(0, Math.round((dSec-aSec)/60) - leaveMin) : null
+      const otMin   = workMin!=null ? workMin-targetMin : null
+
+      const status = !arr                      ? 'Absent'
+                   : broken                    ? 'Check Records'
+                   : workMin==null             ? 'No Departure'
+                   : workMin < targetMin/2     ? 'Half Day'
+                   : lateSec > GRACE_SEC       ? 'Late'
+                   :                             'Present'
+
+      rows.push({
+        empId: emp.empId,
+        Employee: emp.name,
+        'Emp ID': emp.empId,
+        'Home Branch': dnShort(home),
+        'Worked At': arr||dep ? dnShort(workedAt) : '—',
+        'Left From': moved ? dnShort(departedAt) : '',
+        Cover: covering ? (moved ? 'Cover + moved' : 'Cover') : (moved ? 'Moved' : ''),
+        Date: date,
+        Day: new Date(date+'T00:00:00').toLocaleDateString('en-GB',{weekday:'short'}),
+        Status: status,
+        'Arrive Time': arr?.time || '—',
+        'Depart Time': dep?.time || '—',
+        'Shift Start': shift.start,
+        'Shift End': shift.end,
+        'Late By': fmtGap(lateSec),
+        'Early Exit': fmtGap(earlySec),
+        'Short Leave': leaveMin>0 ? `${leaveMin}m` : '—',
+        'Leave Reason': leaveRsn || '—',
+        'Work Hours': workMin!=null ? fmtH(workMin) : (arr ? 'No departure' : '—'),
+        'Target Hours': fmtH(targetMin),
+        'OT / Short': otMin!=null ? (otMin>=0?'+':'-')+fmtH(otMin) : '—',
+        'OT Flag': otMin==null ? '—' : otMin>0 ? 'OT' : otMin<0 ? 'Short' : 'On Time',
+        // Late is tracked separately from Status, because Status can only hold
+        // one value and 'No Departure' would otherwise hide the late arrival.
+        _isLate: lateSec > GRACE_SEC,
+        // Branch key the app does not know — usually a typo in Firestore
+        _badBranch: !!(workedAt && !SHOWROOMS.includes(workedAt)),
+        _lateSec: lateSec, _earlySec: earlySec, _otMin: otMin, _workMin: workMin,
+        _covering: covering, _moved: moved, _broken: broken,
+        _workedAt: workedAt, _home: home, _departedAt: departedAt,
+      })
+    })
+  })
+  return rows.sort((a,b)=> b.Date.localeCompare(a.Date) || a.Employee.localeCompare(b.Employee))
+}
+
+// Headline counts for the Reports page, from the same rows Excel uses
+function dayRowKPIs(rows) {
+  const n = s => rows.filter(r=>r.Status===s).length
+  return {
+    days: rows.length,
+    present: rows.filter(r=>r.Status!=='Absent').length,
+    absent: n('Absent'),
+    late: rows.filter(r=>r._isLate).length,
+    halfDay: n('Half Day'),
+    noDepart: n('No Departure'),
+    broken: n('Check Records'),
+    cover: rows.filter(r=>r._covering).length,
+    moved: rows.filter(r=>r._moved).length,
+    badBranch: rows.filter(r=>r._badBranch).length,
+  }
+}
+
 async function checkBiometricAvailable() {
   try { if(!window.PublicKeyCredential) return false; return await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable() }
   catch { return false }
@@ -154,8 +287,10 @@ export default function Home() {
   const [loading, setLoading]   = useState(false)
   const [fRoom, setFRoom]       = useState('')
   const [fEmp, setFEmp]         = useState('')
-  const [fDate, setFDate]       = useState(today())
+  const [fFrom, setFFrom]       = useState(today())
+  const [fTo, setFTo]           = useState(today())
   const [fType, setFType]       = useState('')
+  const [rptView, setRptView]   = useState('summary') // summary = day rows, records = raw taps
   const [newName, setNewName]   = useState('')
   const [newId, setNewId]       = useState('')
   const [newRoom, setNewRoom]   = useState('Idealz Marino')
@@ -211,7 +346,7 @@ export default function Home() {
   },[])
 
   useEffect(()=>{ if(!session) return; loadAll() },[session])
-  useEffect(()=>{ if(session&&tab==='report') loadReports() },[tab,fRoom,fEmp,fDate,fType])
+  useEffect(()=>{ if(session&&tab==='report') loadReports() },[tab,fEmp,fFrom,fTo])
 
   async function loadAll() {
     const allowedRoom=getAllowedShowroom(session)
@@ -444,15 +579,38 @@ export default function Home() {
     setArchiveLoading(false)
   }
 
+  // Local calendar day as YYYY-MM-DD. Not toISOString(), which is UTC and
+  // would hand back yesterday's date before 5:30 AM in Sri Lanka.
+  function isoDay(d){
+    const z=n=>String(n).padStart(2,'0')
+    return `${d.getFullYear()}-${z(d.getMonth()+1)}-${z(d.getDate())}`
+  }
+  // Quick ranges. 'week' is Monday-to-today, 'month' is the 1st to today.
+  function applyPreset(k){
+    const now=new Date(), t=isoDay(now)
+    const back=n=>{const d=new Date(now); d.setDate(d.getDate()-n); return isoDay(d)}
+    if(k==='today')     { setFFrom(t); setFTo(t) }
+    if(k==='yesterday') { const y=back(1); setFFrom(y); setFTo(y) }
+    if(k==='week')      { const dow=(now.getDay()+6)%7; setFFrom(back(dow)); setFTo(t) }
+    if(k==='month')     { setFFrom(`${isoDay(now).slice(0,7)}-01`); setFTo(t) }
+    if(k==='last30')    { setFFrom(back(29)); setFTo(t) }
+    if(k==='all')       { setFFrom(''); setFTo('') }
+  }
+
   async function loadReports() {
     setLoading(true)
     try {
       const snap=await getDocs(collection(db,'records'))
       let data=snap.docs.map(d=>({id:d.id,...d.data()}))
       if(session?.role==='manager') data=data.filter(r=>r.showroom===session.showroom)
-      if(fRoom)  data=data.filter(r=>r.showroom===fRoom)
       if(fEmp)   data=data.filter(r=>r.empId===fEmp)
-      if(fDate)  data=data.filter(r=>r.date===fDate)
+      // Branch and type are deliberately NOT applied here. A cover day is
+      // stored against the branch worked, so filtering it out now would make
+      // the person read as absent at their home branch. Both are applied
+      // further down, where the day rows know about cover.
+      // Dates are YYYY-MM-DD, so string comparison is already chronological
+      if(fFrom)  data=data.filter(r=>r.date>=fFrom)
+      if(fTo)    data=data.filter(r=>r.date<=fTo)
       if(fType)  data=data.filter(r=>r.type===fType)
       setAllRecs(data.sort((a,b)=>b.createdAt-a.createdAt))
     } catch { showToast('Error loading records.','error') }
@@ -463,110 +621,116 @@ export default function Home() {
     if(!window.XLSX){ await new Promise((res,rej)=>{const s=document.createElement('script');s.src='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';s.onload=res;s.onerror=rej;document.head.appendChild(s)}) }
     const XL=window.XLSX
     const wb=XL.utils.book_new()
+    const BLUE='1A6FE8', AMBER='D97706', PURPLE='6D28D9'
+    // Same rows the screen is showing — the two can never drift apart
+    const rows=dayRows
+    if(!rows.length){ showToast('Nothing to export for this range.','error'); return }
+    const head=(ws,hdrs,rgb)=>hdrs.forEach((_,ci)=>{const ref=XL.utils.encode_cell({r:0,c:ci});if(ws[ref])ws[ref].s={font:{bold:true,color:{rgb:'FFFFFF'},sz:10},fill:{patternType:'solid',fgColor:{rgb:rgb}},alignment:{horizontal:'center'}}})
+    const sheet=(name,hdrs,data,widths,rgb)=>{
+      const ws=XL.utils.aoa_to_sheet([hdrs,...data])
+      ws['!cols']=widths.map(w=>({wch:w}))
+      head(ws,hdrs,rgb)
+      XL.utils.book_append_sheet(wb,ws,name)
+    }
 
-    const SHIFT_MAP={'Idealz Marino':{showroom:['10:00','20:00']},'Idealz Liberty Plaza':{showroom:['10:00','19:00']},'Idealz Prime':{showroom:['09:45','19:30'],backoffice:['09:30','18:30']}}
-    function toMin(t){if(!t||t==='—')return null;const p=t.split(':');return parseInt(p[0])*60+parseInt(p[1])}
-    function fmtH(m){if(m==null||m<=0)return'0h 0m';return`${Math.floor(m/60)}h ${m%60}m`}
-    function getShiftTimes(showroom,stype='showroom'){const sh=SHIFT_MAP[showroom]||{};return sh[stype]||sh['showroom']||['09:00','18:00']}
+    // ── Sheet 1: Daily Attendance ──────────────────────────────────────────
+    // Home Branch / Worked At / Left From / Cover make every branch move
+    // visible on the row it happened on.
+    const cols1=['Employee','Emp ID','Home Branch','Worked At','Left From','Cover','Date','Day','Status',
+                 'Arrive Time','Depart Time','Shift Start','Shift End','Late By','Early Exit',
+                 'Short Leave','Leave Reason','Work Hours','Target Hours','OT / Short','OT Flag']
+    sheet('Daily Attendance',cols1,rows.map(r=>cols1.map(k=>r[k])),
+      [22,9,13,13,12,13,11,6,14,11,11,10,10,9,10,11,22,13,12,12,9],BLUE)
 
-    // Group by employee+date
-    const grouped={}
-    allRecs.forEach(r=>{
-      // Keyed by employee+date only. Including the branch would split a
-      // Prime-in / Marino-out day into two half-rows.
-      const k=`${r.empId}||${r.date}`
-      if(!grouped[k]) grouped[k]=[]
-      grouped[k].push(r)
+    // ── Sheet 2: Employee Summary ──────────────────────────────────────────
+    // Keyed by person, not person+branch, so a week of cover does not split
+    // someone into two half-people. Branches Worked lists where they were.
+    const em={}
+    rows.forEach(r=>{
+      const e=em[r.empId]||(em[r.empId]={name:r.Employee,id:r.empId,home:r['Home Branch'],
+        days:0,absent:0,late:0,lateSec:0,half:0,noDep:0,leaves:0,cover:0,moved:0,workMin:0,otMin:0,branches:new Set()})
+      if(r.Status==='Absent'){ e.absent++; return }
+      e.days++
+      if(r._workedAt) e.branches.add(r['Worked At'])
+      if(r._isLate){ e.late++; e.lateSec+=r._lateSec }
+      if(r.Status==='Half Day') e.half++
+      if(r.Status==='No Departure') e.noDep++
+      if(r['Short Leave']!=='—') e.leaves++
+      if(r._covering) e.cover++
+      if(r._moved)    e.moved++
+      if(r._workMin!=null) e.workMin+=r._workMin
+      if(r._otMin!=null)   e.otMin+=r._otMin
     })
+    const sum2=['Employee','Emp ID','Home Branch','Branches Worked','Cover Days','Mid-Shift Moves',
+                'Days Present','Days Absent','Late Arrivals','Total Late','Avg Late','Half Days',
+                'No Departure','Short Leaves','Total Work Hrs','Avg Hrs/Day','Total OT/Short','Attendance %','Rating']
+    const sumRows=Object.values(em).map(e=>{
+      const total=e.days+e.absent
+      const attend=total?Math.round(e.days/total*100):0
+      const avg=e.days?Math.round(e.workMin/e.days):0
+      const avgLate=e.late?Math.round(e.lateSec/e.late):0
+      // Attendance weighs heaviest, then lateness, then unfinished days
+      const score=Math.max(0,attend-e.late*3-e.half*4-e.noDep*2)
+      const rating=score>=90?'Excellent':score>=75?'Good':score>=60?'Average':'Needs Improvement'
+      return [e.name,e.id,e.home,[...e.branches].join(', ')||'—',e.cover,e.moved,
+              e.days,e.absent,e.late,fmtGap(e.lateSec),fmtGap(avgLate),e.half,e.noDep,e.leaves,
+              fmtH(e.workMin),fmtH(avg),(e.otMin>=0?'+':'-')+fmtH(e.otMin),attend+'%',rating]
+    }).sort((a,b)=>a[0].localeCompare(b[0]))
+    sheet('Employee Summary',sum2,sumRows,[22,9,13,26,11,15,13,12,13,11,10,10,13,12,14,12,14,12,17],BLUE)
 
-    // Build daily rows
-    const dailyRows=[]
-    Object.values(grouped).forEach(recs=>{
-      const r0=recs[0]
-      const arrives=recs.filter(r=>r.type==='arrive').sort((a,b)=>a.time?.localeCompare(b.time))
-      const departs=recs.filter(r=>r.type==='depart').sort((a,b)=>b.time?.localeCompare(a.time))
-      const leaves=recs.filter(r=>r.type==='leave')
-      const arrive=arrives[0]?.time||null
-      const depart=departs[0]?.time||null
-      const leaveDurTotal=leaves.reduce((a,r)=>a+(parseInt(r.duration)||0),0)
-      const leaveRsn=leaves.map(r=>r.reason).filter(Boolean).join('; ')
-      const emp=employees.find(e=>e.empId===r0.empId)||{}
-      // Day belongs to the branch they checked in at
-      const workedAt   = arrives[0]?.showroom || departs[0]?.showroom || r0.showroom
-      const departedAt = departs[0]?.showroom || null
-      const crossBranch= !!(arrives[0] && departs[0] && arrives[0].showroom !== departs[0].showroom)
-      const [shStart,shEnd]=getShiftTimes(workedAt,emp.staffType||'showroom')
-      const sMin=toMin(shStart),eMin=toMin(shEnd)
-      const aMin=toMin(arrive),dMin=toMin(depart)
-      const lateBy=aMin&&aMin>sMin?aMin-sMin:0
-      const earlyExit=dMin&&dMin<eMin?eMin-dMin:0
-      const workMin=aMin&&dMin?Math.max(0,dMin-aMin-leaveDurTotal):null
-      const targetMin=eMin-sMin
-      const otMin=workMin!=null?workMin-targetMin:null
-      const status=!arrive?'Absent':workMin&&workMin<targetMin/2?'Half Day':lateBy>15?'Late':'Present'
-      dailyRows.push({
-        Employee:r0.empName,Showroom:dnShort(workedAt),
-        'Left From':crossBranch?dnShort(departedAt):'',
-        Date:r0.date,
-        Day:r0.date?new Date(r0.date).toLocaleDateString('en-GB',{weekday:'short'}):'',
-        Status:status,'Arrive Time':arrive||'—','Depart Time':depart||'—',
-        'Shift Start':shStart,'Shift End':shEnd,
-        'Late By':lateBy>0?`${lateBy}m`:'—','Early Exit':earlyExit>0?`${earlyExit}m`:'—',
-        'Short Leave':leaveDurTotal>0?`${leaveDurTotal}m`:'—','Leave Reason':leaveRsn||'—',
-        'Work Hours':workMin!=null?fmtH(workMin):'No departure','Target Hours':fmtH(targetMin),
-        'OT / Short':otMin!=null?(otMin>=0?'+':'')+fmtH(Math.abs(otMin)):'—',
-        'OT Flag':otMin!=null?(otMin>0?'OT':otMin<0?'Short':'On Time'):'—',
-        _lateRaw:lateBy,_otRaw:otMin,_workRaw:workMin
-      })
-    })
-    dailyRows.sort((a,b)=>a.Showroom?.localeCompare(b.Showroom)||a.Employee?.localeCompare(b.Employee)||a.Date?.localeCompare(b.Date))
+    // ── Sheet 3: Branch Movements ──────────────────────────────────────────
+    // Every cover day and every mid-shift move, on its own. This is the sheet
+    // to check when someone was shifted to another showroom.
+    const mv=rows.filter(r=>r._covering||r._moved)
+    const mvH=['Date','Day','Employee','Emp ID','Home Branch','Checked In At','Checked Out At',
+               'What Happened','Arrive Time','Depart Time','Shift Followed','Late By','Work Hours','Status']
+    sheet('Branch Movements',mvH,mv.map(r=>[r.Date,r.Day,r.Employee,r['Emp ID'],r['Home Branch'],
+      r['Worked At'],r['Left From']||r['Worked At'],
+      r._covering&&r._moved ? `Covered at ${r['Worked At']}, left from ${r['Left From']}`
+        : r._covering ? `Covered at ${r['Worked At']} (home ${r['Home Branch']})`
+        : `Moved to ${r['Left From']} mid-shift`,
+      r['Arrive Time'],r['Depart Time'],`${r['Shift Start']}–${r['Shift End']} (${r['Worked At']})`,
+      r['Late By'],r['Work Hours'],r.Status]),
+      [11,6,22,9,13,14,15,40,11,11,22,9,13,14],PURPLE)
 
-    // Sheet 1: Daily Attendance
-    const cols1=['Employee','Showroom','Left From','Date','Day','Status','Arrive Time','Depart Time','Shift Start','Shift End','Late By','Early Exit','Short Leave','Leave Reason','Work Hours','Target Hours','OT / Short','OT Flag']
-    const ws1Data=[cols1,...dailyRows.map(r=>cols1.map(c=>r[c]))]
-    const ws1=XL.utils.aoa_to_sheet(ws1Data)
-    ws1['!cols']=[22,12,11,11,8,9,10,10,9,9,8,10,10,22,13,12,12,9].map(w=>({wch:w}))
-    cols1.forEach((_,ci)=>{const ref=XL.utils.encode_cell({r:0,c:ci});if(ws1[ref])ws1[ref].s={font:{bold:true,color:{rgb:'FFFFFF'},sz:10},fill:{patternType:'solid',fgColor:{rgb:'1A6FE8'}},alignment:{horizontal:'center'}}})
-    XL.utils.book_append_sheet(wb,ws1,'Daily Attendance')
+    // ── Sheet 4: Absences ──────────────────────────────────────────────────
+    const abs=rows.filter(r=>r.Status==='Absent')
+    sheet('Absences',['Date','Day','Employee','Emp ID','Home Branch','Note'],
+      abs.map(r=>[r.Date,r.Day,r.Employee,r['Emp ID'],r['Home Branch'],
+        'No arrival recorded at any branch']),[11,6,22,9,13,34],AMBER)
 
-    // Sheet 2: Employee Summary
-    const empMap={}
-    dailyRows.forEach(row=>{
-      const k=row.Employee+'||'+row.Showroom
-      if(!empMap[k]) empMap[k]={name:row.Employee,show:row.Showroom,days:0,absent:0,late:0,leaves:0,workMin:0,otMin:0}
-      if(row.Status==='Absent'){empMap[k].absent++}
-      else{empMap[k].days++;if(row._lateRaw>0)empMap[k].late++;if(row['Short Leave']!=='—')empMap[k].leaves++;if(row._workRaw)empMap[k].workMin+=row._workRaw;if(row._otRaw)empMap[k].otMin+=row._otRaw}
-    })
-    const sumHdrs=['Employee','Showroom','Days Present','Days Absent','Late Arrivals','Short Leaves','Total Work Hrs','Total OT/Short','Avg Hrs/Day','Performance']
-    const sumRows=Object.values(empMap).map(e=>{
-      const avg=e.days>0?Math.round(e.workMin/e.days):0
-      const score=Math.max(0,100-e.late*3-e.absent*5)
-      const perf=score>=90?'Excellent':score>=75?'Good':score>=60?'Average':'Needs Improvement'
-      return[e.name,e.show,e.days,e.absent,e.late,e.leaves,fmtH(e.workMin),(e.otMin>=0?'+':'')+fmtH(Math.abs(e.otMin)),fmtH(avg),perf]
-    })
-    const ws2=XL.utils.aoa_to_sheet([sumHdrs,...sumRows])
-    ws2['!cols']=[22,14,13,12,14,12,14,14,12,16].map(w=>({wch:w}))
-    sumHdrs.forEach((_,ci)=>{const ref=XL.utils.encode_cell({r:0,c:ci});if(ws2[ref])ws2[ref].s={font:{bold:true,color:{rgb:'FFFFFF'},sz:10},fill:{patternType:'solid',fgColor:{rgb:'1A6FE8'}},alignment:{horizontal:'center'}}})
-    XL.utils.book_append_sheet(wb,ws2,'Employee Summary')
+    // ── Sheet 5: Late Arrivals ─────────────────────────────────────────────
+    const late=rows.filter(r=>r._isLate).sort((a,b)=>b._lateSec-a._lateSec)
+    sheet('Late Arrivals',['Date','Day','Employee','Worked At','Cover','Shift Start','Arrive Time','Late By'],
+      late.map(r=>[r.Date,r.Day,r.Employee,r['Worked At'],r.Cover||'—',r['Shift Start'],r['Arrive Time'],r['Late By']]),
+      [11,6,22,13,13,11,11,9],AMBER)
 
-    // Sheet 3: OT Report
-    const otHdrs=['Employee','Showroom','Date','Arrive Time','Depart Time','Work Hours','Target Hours','OT / Short','Flag']
-    const otRows=dailyRows.filter(r=>r['OT Flag']==='OT'||r['OT Flag']==='Short').sort((a,b)=>Math.abs(b._otRaw||0)-Math.abs(a._otRaw||0))
-    const ws3=XL.utils.aoa_to_sheet([otHdrs,...otRows.map(r=>otHdrs.map(c=>r[c]||r['OT Flag']))])
-    ws3['!cols']=[22,12,11,10,10,12,12,12,9].map(w=>({wch:w}))
-    otHdrs.forEach((_,ci)=>{const ref=XL.utils.encode_cell({r:0,c:ci});if(ws3[ref])ws3[ref].s={font:{bold:true,color:{rgb:'FFFFFF'},sz:10},fill:{patternType:'solid',fgColor:{rgb:'1A6FE8'}},alignment:{horizontal:'center'}}})
-    XL.utils.book_append_sheet(wb,ws3,'OT & Hours')
+    // ── Sheet 6: OT & Hours ────────────────────────────────────────────────
+    const ot=rows.filter(r=>r['OT Flag']==='OT'||r['OT Flag']==='Short')
+      .sort((a,b)=>Math.abs(b._otMin||0)-Math.abs(a._otMin||0))
+    sheet('OT & Hours',['Date','Employee','Worked At','Cover','Arrive Time','Depart Time','Work Hours','Target Hours','OT / Short','Flag'],
+      ot.map(r=>[r.Date,r.Employee,r['Worked At'],r.Cover||'—',r['Arrive Time'],r['Depart Time'],
+                 r['Work Hours'],r['Target Hours'],r['OT / Short'],r['OT Flag']]),
+      [11,22,13,13,11,11,13,12,12,9],BLUE)
 
-    // Sheet 4: No Departure (possible on duty)
-    const noDeptHdrs=['Employee','Showroom','Date','Arrive Time','No Departure Recorded','Notes']
-    const noDeptRows=dailyRows.filter(r=>r['Arrive Time']!=='—'&&r['Depart Time']==='—')
-    const ws4=XL.utils.aoa_to_sheet([noDeptHdrs,...noDeptRows.map(r=>[r.Employee,r.Showroom,r.Date,r['Arrive Time'],'No departure recorded — check if on company duty',''])])
-    ws4['!cols']=[22,12,11,12,30,25].map(w=>({wch:w}))
-    noDeptHdrs.forEach((_,ci)=>{const ref=XL.utils.encode_cell({r:0,c:ci});if(ws4[ref])ws4[ref].s={font:{bold:true,color:{rgb:'FFFFFF'},sz:10},fill:{patternType:'solid',fgColor:{rgb:'D97706'}},alignment:{horizontal:'center'}}})
-    XL.utils.book_append_sheet(wb,ws4,'No Departure Records')
+    // ── Sheet 7: Needs Checking ────────────────────────────────────────────
+    // Arrived but never clocked out, or clocked out before clocking in.
+    const chk=rows.filter(r=>r.Status==='No Departure'||r.Status==='Check Records'||r._badBranch)
+    sheet('Needs Checking',['Date','Employee','Worked At','Left From','Arrive Time','Depart Time','Problem','Action'],
+      chk.map(r=>[r.Date,r.Employee,r['Worked At'],r['Left From']||'—',r['Arrive Time'],r['Depart Time'],
+        r._badBranch ? `Branch name "${r._workedAt}" is not one of the three showrooms`
+          : r.Status==='Check Records' ? 'Departure is earlier than arrival'
+          : 'No departure recorded',
+        r._badBranch ? 'Misspelt branch in Firestore — correct it or this day is missing from branch reports'
+          : r.Status==='Check Records' ? 'Likely a past-midnight checkout — confirm and correct'
+          : 'Check if on company duty or forgot to check out']),
+      [11,22,13,12,11,11,32,42],AMBER)
 
-    XL.writeFile(wb,`idealz-attendance-${fDate||today()}.xlsx`)
-    showToast('✅ Excel report downloaded!')
+    const span=(!fFrom&&!fTo) ? 'all-time'
+             : fFrom===fTo    ? fFrom
+             : `${fFrom||'start'}_to_${fTo||'today'}`
+    XL.writeFile(wb,`idealz-attendance-${span}.xlsx`)
+    showToast(`✅ Excel downloaded — ${rows.length} day rows, ${mv.length} branch moves`)
   }
 
   async function addEmployee() {
@@ -607,6 +771,11 @@ export default function Home() {
   const typeLabel={arrive:'Arrive',depart:'Depart',leave:'Short Leave',return:'Returned'}
   const logColors={arrive:'#43e97b',depart:'#ff6584',leave:'#f7c948',return:'#a78bfa'}
   const roleColor={employee:'#6b6b8a',manager:'#38b6ff',admin:'#a78bfa',backoffice:'#f7c948'}
+
+  // Both views and the Excel export come off these three lines
+  const dayRows = buildDayRows(allRecs, employees, fRoom)
+  const rptKPI  = dayRowKPIs(dayRows)
+  const rawRecs = allRecs.filter(r=>(!fRoom||r.showroom===fRoom)&&(!fType||r.type===fType))
 
   return (<>
     <Head>
@@ -800,7 +969,10 @@ export default function Home() {
             <option value="">All Employees</option>
             {employees.map(e=><option key={e.id} value={e.empId}>{e.name}</option>)}
           </select>
-          <input type="date" style={{...S.sel,width:'auto',minWidth:140}} value={fDate} onChange={e=>setFDate(e.target.value)}/>
+          <span style={{fontSize:'0.75rem',color:'#6B7280'}}>From</span>
+          <input type="date" style={{...S.sel,width:'auto',minWidth:140}} value={fFrom} max={fTo||undefined} onChange={e=>setFFrom(e.target.value)}/>
+          <span style={{fontSize:'0.75rem',color:'#6B7280'}}>To</span>
+          <input type="date" style={{...S.sel,width:'auto',minWidth:140}} value={fTo} min={fFrom||undefined} onChange={e=>setFTo(e.target.value)}/>
           <select style={{...S.sel,width:'auto',minWidth:120}} value={fType} onChange={e=>setFType(e.target.value)}>
             <option value="">All Types</option>
             <option value="arrive">Arrive</option>
@@ -810,76 +982,137 @@ export default function Home() {
           </select>
           <button style={S.exportBtn} onClick={exportExcel}>⬇ Excel</button>
         </div>
-        <div className="stats-grid" style={S.statsGrid}>
-          {[{l:'Total',v:allRecs.length,c:'#1a6fe8'},{l:'Arrived',v:stats.arrived??0,c:'#16a34a'},{l:'Departed',v:stats.departed??0,c:'#dc2626'},{l:'Leaves',v:stats.onLeave??0,c:'#d97706'}].map(s=>(
-            <div key={s.l} style={S.statCard}>
-              <div style={{fontSize:'0.68rem',color:'#64748b',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:4}}>{s.l}</div>
-              <div style={{fontSize:'1.8rem',fontWeight:800,color:s.c}}>{s.v}</div>
+        <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:16,alignItems:'center'}}>
+          {[['today','Today'],['yesterday','Yesterday'],['week','This week'],['month','This month'],['last30','Last 30 days'],['all','All time']]
+            .map(([k,label])=>(
+            <button key={k} onClick={()=>applyPreset(k)} style={{padding:'5px 11px',borderRadius:14,border:'1px solid #E3E0D6',
+              background:'#F8F7F3',color:'#5F5E5A',fontSize:'0.73rem',cursor:'pointer',fontFamily:'inherit'}}>{label}</button>
+          ))}
+          <span style={{fontSize:'0.73rem',color:'#8A8982',marginLeft:4}}>
+            {(!fFrom&&!fTo) ? 'All records' : fFrom===fTo ? `${fFrom}` : `${fFrom||'start'} → ${fTo||'today'}`}
+            {' · '}{rptKPI.days} day row{rptKPI.days===1?'':'s'} · {allRecs.length} record{allRecs.length===1?'':'s'}
+          </span>
+        </div>
+        {rptKPI.badBranch>0 && <div style={{background:'#FAECE7',border:'1px solid #F0CDBF',borderRadius:10,
+          padding:'10px 13px',marginBottom:12,fontSize:'0.76rem',color:'#993C1D',lineHeight:1.5}}>
+          <b>{rptKPI.badBranch} day row{rptKPI.badBranch===1?'':'s'}</b> point at a branch name the app does not recognise —
+          almost always a typo in Firestore (for example “Idealz Libert Plaza”). Those days appear under
+          All&nbsp;Showrooms but are missing from every single-branch report. The Needs&nbsp;Checking sheet in
+          Excel lists them with the exact spelling to fix.
+        </div>}
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(104px,1fr))',gap:10,marginBottom:14}}>
+          {[{l:'Day rows',v:rptKPI.days,c:'#5F5E5A'},
+            {l:'Present',v:rptKPI.present,c:'#0F6E56'},
+            {l:'Late',v:rptKPI.late,c:'#854F0B'},
+            {l:'Absent',v:rptKPI.absent,c:'#993C1D'},
+            {l:'Half day',v:rptKPI.halfDay,c:'#854F0B'},
+            {l:'Cover days',v:rptKPI.cover,c:'#5B3DB5'},
+            {l:'Branch moves',v:rptKPI.moved,c:'#5B3DB5'},
+            {l:'Needs check',v:rptKPI.noDepart+rptKPI.broken,c:'#993C1D'}].map(s=>(
+            <div key={s.l} style={{background:'#fff',border:'1px solid #E8E5DC',borderRadius:10,padding:'10px 12px'}}>
+              <div style={{fontSize:'0.63rem',color:'#8A8982',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:3}}>{s.l}</div>
+              <div style={{fontSize:'1.45rem',fontWeight:700,color:s.c,lineHeight:1.1}}>{s.v}</div>
             </div>
           ))}
         </div>
-        <div className="table-scroll">
-          {loading?<div style={{textAlign:'center',padding:32,color:'#64748b'}}>Loading…</div>
-            :<table style={{width:'100%',borderCollapse:'collapse',fontSize:'0.78rem',minWidth:600}}>
-              <thead><tr style={{borderBottom:'2px solid #e2e8f0'}}>
-                {['Employee','Showroom','Type','Arrive','Depart','Work Hrs','OT/Short','Date','Reason'].map(h=>(
-                  <th key={h} style={{textAlign:'left',padding:'8px 10px',color:'#64748b',fontWeight:600,fontSize:'0.7rem',textTransform:'uppercase',letterSpacing:'.05em',whiteSpace:'nowrap'}}>{h}</th>
+
+        <div style={{display:'flex',gap:6,marginBottom:12,alignItems:'center',flexWrap:'wrap'}}>
+          {[['summary','Attendance summary'],['records','Raw check-ins']].map(([k,label])=>(
+            <button key={k} onClick={()=>setRptView(k)} style={{padding:'6px 14px',borderRadius:16,cursor:'pointer',
+              fontFamily:'inherit',fontSize:'0.75rem',fontWeight:rptView===k?600:400,
+              border:'1px solid '+(rptView===k?'#1A6FE8':'#E3E0D6'),
+              background:rptView===k?'#E8F1FD':'#F8F7F3',color:rptView===k?'#1A6FE8':'#5F5E5A'}}>{label}</button>
+          ))}
+          <span style={{fontSize:'0.71rem',color:'#8A8982',marginLeft:4}}>
+            {rptView==='summary'
+              ? 'One row per person per working day. Absences included. Excel exports exactly this.'
+              : 'Every individual tap. The Type filter applies here only.'}
+          </span>
+        </div>
+
+        {rptView==='summary' && <div className="table-scroll">
+          {loading?<div style={{textAlign:'center',padding:32,color:'#8A8982'}}>Loading…</div>
+            :dayRows.length===0
+            ?<div style={{textAlign:'center',padding:32,color:'#8A8982',fontSize:'0.82rem'}}>No working days in this range.</div>
+            :<table style={{width:'100%',borderCollapse:'collapse',fontSize:'0.76rem',minWidth:1020}}>
+              <thead><tr style={{borderBottom:'2px solid #E8E5DC'}}>
+                {['Date','Employee','Home','Worked at','Status','Arrive','Depart','Shift','Late','Early out','Leave','Work hrs','OT / short'].map(h=>(
+                  <th key={h} style={{textAlign:'left',padding:'8px 9px',color:'#8A8982',fontWeight:600,fontSize:'0.66rem',textTransform:'uppercase',letterSpacing:'.05em',whiteSpace:'nowrap'}}>{h}</th>
                 ))}
               </tr></thead>
               <tbody>
-                {allRecs.length===0
-                  ?<tr><td colSpan={9} style={{textAlign:'center',color:'#64748b',padding:32}}>No records found</td></tr>
-                  :(() => {
-                    // Group by employee+date for arrive/depart pairing
-                    const grouped2={}
-                    allRecs.forEach(r=>{
-                      const k=`${r.empId}||${r.date}`
-                      if(!grouped2[k]) grouped2[k]={empName:r.empName,showroom:r.showroom,date:r.date,arrive:null,depart:null,leaves:[],others:[]}
-                      if(r.type==='arrive') grouped2[k].arrive=r
-                      else if(r.type==='depart') grouped2[k].depart=r
-                      else if(r.type==='leave') grouped2[k].leaves.push(r)
-                      else grouped2[k].others.push(r)
-                    })
-                    return Object.values(grouped2).sort((a,b)=>b.date?.localeCompare(a.date)||a.empName?.localeCompare(b.empName)).map((g,gi)=>{
-                      const emp=employees.find(e=>e.empId===g.arrive?.empId||e.empId===g.depart?.empId)
-                      const[shStart,shEnd]=[getShift(g.showroom,emp?.staffType).start,getShift(g.showroom,emp?.staffType).end]
-                      const toMin2=t=>{if(!t)return null;const p=t.split(':');return parseInt(p[0])*60+parseInt(p[1])}
-                      const aMin=toMin2(g.arrive?.time),dMin=toMin2(g.depart?.time)
-                      const sMin=toMin2(shStart),eMin=toMin2(shEnd)
-                      const leaveDurTotal=g.leaves.reduce((a,r)=>a+(parseInt(r.duration)||0),0)
-                      const workMin=aMin&&dMin?Math.max(0,dMin-aMin-leaveDurTotal):null
-                      const targetMin=sMin&&eMin?eMin-sMin:null
-                      const otMin=workMin!=null&&targetMin?workMin-targetMin:null
-                      const fmtH2=m=>{if(m==null)return'—';if(m<=0)return'0h 0m';return`${Math.floor(m/60)}h ${m%60}m`}
-                      return(
-                        <tr key={gi} style={{borderBottom:'1px solid #f1f5f9',background:gi%2===0?'#fff':'#f8fafc'}}>
-                          <td style={{padding:'9px 10px',fontWeight:500,color:'#0f172a',whiteSpace:'nowrap'}}>{g.empName?.split(' ')[0]}</td>
-                          <td style={{padding:'9px 10px',color:'#64748b',fontSize:'0.7rem',whiteSpace:'nowrap'}}>{dnShort(g.showroom)}</td>
-                          <td style={{padding:'9px 10px'}}>
-                            {g.arrive&&<span style={badge('arrive')}>Arrive</span>}
-                            {g.depart&&<span style={{...badge('depart'),marginLeft:4}}>Depart</span>}
-                            {g.leaves.length>0&&<span style={{...badge('leave'),marginLeft:4}}>Leave</span>}
-                          </td>
-                          <td style={{padding:'9px 10px',color:aMin&&sMin&&aMin>sMin?'#d97706':'#16a34a',fontWeight:500,whiteSpace:'nowrap'}}>{g.arrive?.time||'—'}</td>
-                          <td style={{padding:'9px 10px',color:dMin&&eMin&&dMin<eMin?'#dc2626':'#0f172a',whiteSpace:'nowrap'}}>{g.depart?.time||<span style={{color:'#f59e0b',fontSize:'0.72rem'}}>No departure</span>}</td>
-                          <td style={{padding:'9px 10px',fontWeight:600,color:workMin?'#0f172a':'#94a3b8'}}>{fmtH2(workMin)}</td>
-                          <td style={{padding:'9px 10px'}}>
-                            {otMin!=null
-                              ?<span style={{fontSize:'0.72rem',fontWeight:600,color:otMin>0?'#7c3aed':otMin<0?'#dc2626':'#16a34a',background:otMin>0?'#ede9fe':otMin<0?'#fee2e2':'#dcfce7',padding:'2px 8px',borderRadius:20}}>
-                                {otMin>0?'+':''}{fmtH2(otMin)}
-                              </span>
-                              :'—'}
-                          </td>
-                          <td style={{padding:'9px 10px',color:'#64748b',whiteSpace:'nowrap'}}>{g.date}</td>
-                          <td style={{padding:'9px 10px',color:'#64748b',fontSize:'0.72rem',maxWidth:120,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{g.leaves.map(l=>l.reason).filter(Boolean).join(', ')||'—'}</td>
-                        </tr>
-                      )
-                    })
-                  })()
-                }
+                {dayRows.map((r,ri)=>{
+                  const sc={'Present':['#0F6E56','#E1F5EE'],'Late':['#854F0B','#FAEEDA'],
+                            'Absent':['#993C1D','#FAECE7'],'Half Day':['#854F0B','#FAEEDA'],
+                            'No Departure':['#993C1D','#FAECE7'],'Check Records':['#993C1D','#FAECE7']}[r.Status]||['#5F5E5A','#F1EFE8']
+                  return (
+                  <tr key={ri} style={{borderBottom:'1px solid #F1EFE8',background:r.Status==='Absent'?'#FFFBFA':(ri%2?'#FBFAF7':'#fff')}}>
+                    <td style={{padding:'8px 9px',color:'#5F5E5A',whiteSpace:'nowrap'}}>{r.Date}<span style={{color:'#B5B3AB',marginLeft:5}}>{r.Day}</span></td>
+                    <td style={{padding:'8px 9px',fontWeight:500,color:'#201F1C',whiteSpace:'nowrap'}}>{r.Employee}</td>
+                    <td style={{padding:'8px 9px',color:'#8A8982',fontSize:'0.7rem',whiteSpace:'nowrap'}}>{r['Home Branch']}</td>
+                    <td style={{padding:'8px 9px',whiteSpace:'nowrap'}}>
+                      <span style={{color:r._covering?'#5B3DB5':'#5F5E5A',fontWeight:r._covering?600:400}}>{r['Worked At']}</span>
+                      {/* A branch move is spelled out on the row it happened on */}
+                      {r._covering&&<span style={{marginLeft:5,fontSize:'0.63rem',background:'#EFE9FB',color:'#5B3DB5',padding:'1px 6px',borderRadius:10}}>cover</span>}
+                      {r._moved&&<span style={{marginLeft:4,fontSize:'0.63rem',background:'#EFE9FB',color:'#5B3DB5',padding:'1px 6px',borderRadius:10}}>→ {r['Left From']}</span>}
+                    </td>
+                    <td style={{padding:'8px 9px',whiteSpace:'nowrap'}}>
+                      <span style={{fontSize:'0.68rem',fontWeight:600,color:sc[0],background:sc[1],padding:'2px 8px',borderRadius:12}}>{r.Status}</span>
+                    </td>
+                    <td style={{padding:'8px 9px',color:r._lateSec>GRACE_SEC?'#854F0B':'#0F6E56',whiteSpace:'nowrap'}}>{r['Arrive Time']}</td>
+                    <td style={{padding:'8px 9px',color:r['Depart Time']==='—'?'#B5B3AB':'#201F1C',whiteSpace:'nowrap'}}>{r['Depart Time']}</td>
+                    <td style={{padding:'8px 9px',color:'#8A8982',fontSize:'0.68rem',whiteSpace:'nowrap'}}>{r['Shift Start']}–{r['Shift End']}</td>
+                    <td style={{padding:'8px 9px',color:r._lateSec>GRACE_SEC?'#854F0B':'#B5B3AB',fontWeight:r._lateSec>GRACE_SEC?600:400,whiteSpace:'nowrap'}}>{r['Late By']}</td>
+                    <td style={{padding:'8px 9px',color:r._earlySec>0?'#993C1D':'#B5B3AB',whiteSpace:'nowrap'}}>{r['Early Exit']}</td>
+                    <td style={{padding:'8px 9px',color:'#8A8982',fontSize:'0.7rem',maxWidth:110,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}
+                        title={r['Leave Reason']!=='—'?r['Leave Reason']:''}>{r['Short Leave']}</td>
+                    <td style={{padding:'8px 9px',fontWeight:600,color:r._workMin!=null?'#201F1C':'#B5B3AB',whiteSpace:'nowrap'}}>{r['Work Hours']}</td>
+                    <td style={{padding:'8px 9px',whiteSpace:'nowrap'}}>
+                      {r._otMin!=null
+                        ?<span style={{fontSize:'0.68rem',fontWeight:600,
+                            color:r._otMin>0?'#5B3DB5':r._otMin<0?'#993C1D':'#0F6E56',
+                            background:r._otMin>0?'#EFE9FB':r._otMin<0?'#FAECE7':'#E1F5EE',padding:'2px 8px',borderRadius:12}}>
+                          {r['OT / Short']}</span>
+                        :<span style={{color:'#B5B3AB'}}>—</span>}
+                    </td>
+                  </tr>)
+                })}
               </tbody>
             </table>}
-        </div>
+        </div>}
+
+        {rptView==='records' && <div className="table-scroll">
+          {loading?<div style={{textAlign:'center',padding:32,color:'#8A8982'}}>Loading…</div>
+            :<table style={{width:'100%',borderCollapse:'collapse',fontSize:'0.76rem',minWidth:620}}>
+              <thead><tr style={{borderBottom:'2px solid #E8E5DC'}}>
+                {['Date','Time','Employee','Branch','Type','Duration','Reason'].map(h=>(
+                  <th key={h} style={{textAlign:'left',padding:'8px 10px',color:'#8A8982',fontWeight:600,fontSize:'0.66rem',textTransform:'uppercase',letterSpacing:'.05em',whiteSpace:'nowrap'}}>{h}</th>
+                ))}
+              </tr></thead>
+              <tbody>
+                {rawRecs.length===0
+                  ?<tr><td colSpan={7} style={{textAlign:'center',color:'#8A8982',padding:32}}>No records found</td></tr>
+                  :rawRecs.map((r,ri)=>{
+                    const emp=employees.find(e=>e.empId===r.empId)
+                    // Flags the tap itself as cover, so the raw log shows it too
+                    const cov=emp&&emp.showroom&&r.showroom!==emp.showroom
+                    return (
+                    <tr key={r.id||ri} style={{borderBottom:'1px solid #F1EFE8',background:ri%2?'#FBFAF7':'#fff'}}>
+                      <td style={{padding:'8px 10px',color:'#5F5E5A',whiteSpace:'nowrap'}}>{r.date}</td>
+                      <td style={{padding:'8px 10px',color:'#201F1C',whiteSpace:'nowrap'}}>{r.time}</td>
+                      <td style={{padding:'8px 10px',fontWeight:500,color:'#201F1C',whiteSpace:'nowrap'}}>{r.empName}</td>
+                      <td style={{padding:'8px 10px',whiteSpace:'nowrap'}}>
+                        <span style={{color:cov?'#5B3DB5':'#5F5E5A',fontSize:'0.72rem'}}>{dnShort(r.showroom)}</span>
+                        {cov&&<span style={{marginLeft:5,fontSize:'0.62rem',background:'#EFE9FB',color:'#5B3DB5',padding:'1px 6px',borderRadius:10}}>cover</span>}
+                      </td>
+                      <td style={{padding:'8px 10px'}}><span style={badge(r.type,r.overdue)}>{r.type}</span></td>
+                      <td style={{padding:'8px 10px',color:'#8A8982',whiteSpace:'nowrap'}}>{r.duration?`${r.duration}m`:'—'}</td>
+                      <td style={{padding:'8px 10px',color:'#8A8982',fontSize:'0.72rem',maxWidth:160,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={r.reason||''}>{r.reason||'—'}</td>
+                    </tr>)
+                  })}
+              </tbody>
+            </table>}
+        </div>}
       </div>}
 
       {tab==='admin'&&canManageEmployees(session)&&<div className="page-content" style={S.page}>
