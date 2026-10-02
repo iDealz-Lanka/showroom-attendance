@@ -67,6 +67,17 @@ function getCurrentPosition() {
   })
 }
 
+// Which branch is this position inside? Null if none — they are not at work.
+function findBranchAt(lat, lng) {
+  let best = null, bestDist = Infinity
+  for (const name of Object.keys(SHOWROOM_LOCATIONS)) {
+    const loc = SHOWROOM_LOCATIONS[name]
+    const d = getDistance(loc.lat, loc.lng, lat, lng)
+    if (d <= loc.radius && d < bestDist) { best = name; bestDist = d }
+  }
+  return best ? { room: best, distance: Math.round(bestDist) } : null
+}
+
 function getShift(showroom, staffType='showroom') {
   const sh=SHIFTS[showroom]; if(!sh) return {start:'09:00',end:'18:00'}
   return sh[staffType]||sh.showroom
@@ -160,6 +171,8 @@ export default function Home() {
   const [archiveCount, setArchiveCount] = useState(0)
   const [archiveLoading, setArchiveLoading] = useState(false)
   const [actionLoading, setActionLoading] = useState(false) // prevents double tap
+  const [detecting, setDetecting]   = useState(false) // locating the branch on open
+  const [detectFailed, setDetectFailed] = useState(false)
 
   useEffect(()=>{
     setMounted(true)
@@ -169,6 +182,25 @@ export default function Home() {
     if(s.role==='manager') setSelRoom(s.showroom)
     if(s.role==='employee') setSelRoom(s.showroom)
   },[])
+
+  // Employees do not pick a branch — GPS says where they are.
+  // Covering at another store just works, with no admin change needed.
+  useEffect(()=>{
+    if(!session || session.role!=='employee') return
+    let cancelled=false
+    setDetecting(true); setDetectFailed(false)
+    getCurrentPosition()
+      .then(pos=>{
+        if(cancelled) return
+        const found=findBranchAt(pos.lat,pos.lng)
+        // At a branch -> use it. Not at any -> fall back to their own,
+        // so tapping Arrive gives the usual distance message.
+        setSelRoom(found ? found.room : session.showroom)
+      })
+      .catch(()=>{ if(!cancelled){ setSelRoom(session.showroom); setDetectFailed(true) } })
+      .then(()=>{ if(!cancelled) setDetecting(false) })
+    return ()=>{ cancelled=true }
+  },[session])
 
   useEffect(()=>{
     const t=setInterval(()=>{
@@ -296,7 +328,10 @@ export default function Home() {
     setFpOv(false); setGpsStatus('')
     if(!ok){ track('biometric_failed',{ showroom:selRoom, action:type }); return showToast('Face ID / fingerprint did not match.','error') }
 
-    const rec={empId:emp.empId,empName:emp.name,showroom:selRoom,type,date:today(),time:nowTime(),reason:'',duration:0}
+    const homeShowroom=emp.showroom||session.showroom
+    const rec={empId:emp.empId,empName:emp.name,showroom:selRoom,homeShowroom,
+               isCovering:selRoom!==homeShowroom,
+               type,date:today(),time:nowTime(),reason:'',duration:0}
     await addDoc(collection(db,'records'),{...rec,createdAt:Date.now()})
     track(type==='arrive'?'checkin_success':'checkout_success',{ showroom:selRoom, role:session.role })
     setLog(p=>[{...rec,id:Date.now()},...p])
@@ -327,7 +362,10 @@ export default function Home() {
     const ok=await verifyBiometric(emp.empId)
     setFpOv(false); setGpsStatus('')
     if(!ok) return showToast('Face ID / fingerprint did not match.','error')
-    const rec={empId:emp.empId,empName:emp.name,showroom:selRoom,type:'leave',date:today(),time:nowTime(),reason:leaveReason||'Short leave',duration:parseInt(leaveDur)}
+    const homeShowroom=emp.showroom||session.showroom
+    const rec={empId:emp.empId,empName:emp.name,showroom:selRoom,homeShowroom,
+               isCovering:selRoom!==homeShowroom,
+               type:'leave',date:today(),time:nowTime(),reason:leaveReason||'Short leave',duration:parseInt(leaveDur)}
     await addDoc(collection(db,'records'),{...rec,createdAt:Date.now()})
     setLog(p=>[{...rec,id:Date.now()},...p])
     setTodayRecs(p=>{const n=[...p,rec];computeStats(employees,n);return n})
@@ -363,7 +401,8 @@ export default function Home() {
     const expectedDur=leaveRec?.duration||30
     const overdue=actualMinutes>expectedDur
     const overdueBy=overdue?actualMinutes-expectedDur:0
-    const rec={empId:emp.empId,empName:emp.name,showroom:selRoom,type:'return',date:today(),time:nowTime(),reason:overdue?`Returned ${overdueBy} min late (expected ${expectedDur} min, took ${actualMinutes} min)`:`Returned on time (${actualMinutes} min)`,duration:actualMinutes,expectedDuration:expectedDur,overdue,overdueBy}
+    const homeShowroom=emp.showroom||session.showroom
+    const rec={empId:emp.empId,empName:emp.name,showroom:selRoom,homeShowroom,isCovering:selRoom!==homeShowroom,type:'return',date:today(),time:nowTime(),reason:overdue?`Returned ${overdueBy} min late (expected ${expectedDur} min, took ${actualMinutes} min)`:`Returned on time (${actualMinutes} min)`,duration:actualMinutes,expectedDuration:expectedDur,overdue,overdueBy}
     await addDoc(collection(db,'records'),{...rec,createdAt:Date.now()})
     setLog(p=>[{...rec,id:Date.now()},...p])
     setTodayRecs(p=>{const n=[...p,rec];computeStats(employees,n);return n})
@@ -606,7 +645,8 @@ export default function Home() {
         {/* Showroom selector — employees only see their own showroom */}
         <div className="room-grid" style={{...S.roomGrid,gridTemplateColumns:session.role==='employee'?'1fr':session.role==='manager'?'1fr':'repeat(3,1fr)'}}>
           {SHOWROOMS.filter(s=>{
-            if(session.role==='employee') return s===session.showroom
+            // Employee sees the branch GPS put them at, not a chooser
+            if(session.role==='employee') return s===(selRoom||session.showroom)
             if(session.role==='manager') return s===session.showroom
             return true
           }).map((s,i)=>{
@@ -662,6 +702,26 @@ export default function Home() {
           </div>
         )}
 
+        {/* Where GPS says they are */}
+        {session.role==='employee'&&detecting&&(
+          <div style={{marginBottom:16,padding:'10px 16px',borderRadius:10,background:'#e8f1fd',border:'1px solid #bfdbfe',display:'flex',alignItems:'center',gap:10,fontSize:'0.82rem',color:'#1456b8'}}>
+            <span style={{fontSize:'1.1rem'}}>📍</span>
+            <span>Finding which branch you are at…</span>
+          </div>
+        )}
+        {session.role==='employee'&&!detecting&&selRoom&&selRoom!==session.showroom&&(
+          <div style={{marginBottom:16,padding:'10px 16px',borderRadius:10,background:'#fef3c7',border:'1px solid #fde68a',display:'flex',alignItems:'center',gap:10,fontSize:'0.82rem',color:'#92400e'}}>
+            <span style={{fontSize:'1.1rem'}}>🔄</span>
+            <span>You are at <strong>{dn(selRoom)}</strong> today — covering, not your usual branch. Shift times follow {dnShort(selRoom)}.</span>
+          </div>
+        )}
+        {session.role==='employee'&&!detecting&&detectFailed&&(
+          <div style={{marginBottom:16,padding:'10px 16px',borderRadius:10,background:'#fee2e2',border:'1px solid #fca5a5',display:'flex',alignItems:'center',gap:10,fontSize:'0.82rem',color:'#dc2626'}}>
+            <span style={{fontSize:'1.1rem'}}>❌</span>
+            <span>Could not read your location. Turn Location on, then reload the page.</span>
+          </div>
+        )}
+
         {gpsStatus&&(
           <div style={{marginBottom:16,padding:'10px 16px',borderRadius:10,background:gpsStatus==='checking'?'#e8f1fd':gpsStatus==='ok'?'#dcfce7':'#fee2e2',border:`1px solid ${gpsStatus==='checking'?'#bfdbfe':gpsStatus==='ok'?'#bbf7d0':'#fca5a5'}`,display:'flex',alignItems:'center',gap:10,fontSize:'0.82rem',color:gpsStatus==='checking'?'#1456b8':gpsStatus==='ok'?'#166534':'#dc2626'}}>
             <span style={{fontSize:'1.1rem'}}>{gpsStatus==='checking'?'📍':gpsStatus==='ok'?'✅':'❌'}</span>
@@ -684,7 +744,7 @@ export default function Home() {
                 <div style={{width:34,height:34,borderRadius:'50%',background:session.color+'33',color:session.color,display:'flex',alignItems:'center',justifyContent:'center',fontWeight:700,fontSize:'0.78rem'}}>{initials(session.name)}</div>
                 <div>
                   <div style={{fontSize:'0.85rem',fontWeight:500,color:'#0f172a'}}>{session.name}</div>
-                  <div style={{fontSize:'0.7rem',color:'#64748b'}}>{getShift(session.showroom,session.staffType).start} – {getShift(session.showroom,session.staffType).end}</div>
+                  <div style={{fontSize:'0.7rem',color:'#64748b'}}>{getShift(selRoom||session.showroom,session.staffType).start} – {getShift(selRoom||session.showroom,session.staffType).end}</div>
                 </div>
               </div>
             )}
