@@ -95,8 +95,11 @@ function deriveStats(empId, dateRecords, showroom, staffType='showroom') {
 
   // Hours follow the branch actually worked that day, so someone covering
   // at Prime is judged against Prime's 09:45, not their home branch's 10:00.
-  const workedAt  = arrRec?.showroom || depRec?.showroom || showroom
-  const covering  = workedAt !== showroom
+  const workedAt   = arrRec?.showroom || depRec?.showroom || showroom
+  const covering   = workedAt !== showroom
+  // Started at one branch, left from another — a mid-shift move
+  const departedAt  = depRec?.showroom || null
+  const crossBranch = !!(arrRec && depRec && arrRec.showroom !== depRec.showroom)
   const shift = getShift(workedAt, staffType)
   const sMin = toMin(shift.start), eMin = toMin(shift.end)
   const leaveRecs = recs.filter(r => r.type === 'leave')
@@ -116,7 +119,7 @@ function deriveStats(empId, dateRecords, showroom, staffType='showroom') {
   const shiftMin  = eMin - sMin
   const halfDay   = workMin != null && workMin > 0 && workMin < shiftMin / 2
 
-  return { arrive, depart, lateBy, lateSec, earlyExit, leaveDur, leaveReasons, workMin, halfDay, sMin, eMin, workedAt, covering }
+  return { arrive, depart, lateBy, lateSec, earlyExit, leaveDur, leaveReasons, workMin, halfDay, sMin, eMin, workedAt, covering, departedAt, crossBranch }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -311,6 +314,9 @@ export default function Analytics() {
                     <span style={{ fontSize:13 }}>{emp.name}</span>
                     <span style={{ fontSize:11, color:'var(--color-text-secondary)', whiteSpace:'nowrap' }}>
                       {dnShort(s?.workedAt || emp.showroom)}
+                      {s?.crossBranch
+                        ? <span style={{ color:'#185FA5', fontWeight:600 }}> → {dnShort(s.departedAt)}</span>
+                        : null}
                       {s?.covering
                         ? <span style={{ color:'#854F0B', fontWeight:600 }}> (cover)</span>
                         : null}
@@ -376,6 +382,7 @@ export default function Analytics() {
                     <td style={S.td}>{emp.name}</td>
                     <td style={S.td}>
                       {badge(dnShort(s?.workedAt || emp.showroom),'info')}
+                      {s?.crossBranch && <span style={{marginLeft:4,fontSize:11,color:'#185FA5',fontWeight:600}} title={`Checked in at ${dnShort(s.workedAt)}, checked out at ${dnShort(s.departedAt)}`}>→ {dnShort(s.departedAt)}</span>}
                       {s?.covering && <span style={{marginLeft:4,fontSize:10,background:'#FAEEDA',color:'#854F0B',padding:'1px 6px',borderRadius:3}} title={`Normally ${dnShort(emp.showroom)}`}>cover</span>}
                       {emp.staffType==='backoffice'&&<span style={{marginLeft:4,fontSize:10,background:'#FAEEDA',color:'#854F0B',padding:'1px 6px',borderRadius:3}}>Back Office</span>}
                     </td>
