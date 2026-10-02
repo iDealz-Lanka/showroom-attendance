@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef } from 'react'
 import Head from 'next/head'
+import { useRouter } from 'next/router'
 import { db } from '../lib/firebase'
+import { getSession, clearSession } from '../lib/auth'
 import { collection, getDocs, query, where } from 'firebase/firestore'
 
 const SHOWROOMS = [
@@ -135,9 +137,29 @@ export default function Analytics() {
   const chartRef = useRef(null)
   const chartInst = useRef(null)
 
-  useEffect(() => { fetchEmployees().then(setEmps) }, [])
+  const router = useRouter()
+  const [session, setSession] = useState(null)
+  // null = still checking, true = admin, false = turned away.
+  // Nothing renders and nothing is fetched until this is true.
+  const [allowed, setAllowed] = useState(null)
+
+  // Admin only. getSession reads localStorage, so this can only run in the
+  // browser — hence the guard lives in an effect and the page renders a
+  // holding screen until it has answered.
+  useEffect(() => {
+    const s = getSession()
+    if (!s)                { setAllowed(false); router.replace('/login'); return }
+    if (s.role !== 'admin'){ setAllowed(false); router.replace('/');      return }
+    setSession(s)
+    setAllowed(true)
+  }, [])
+
+  // Every fetch below waits for `allowed`, so a non-admin never pulls staff
+  // or attendance data, not even for the instant before the redirect lands.
+  useEffect(() => { if(allowed) fetchEmployees().then(setEmps) }, [allowed])
 
   useEffect(() => {
+    if (!allowed) return
     setLoading(true)
     let filters = {}
     if (view === 'day') {
@@ -155,7 +177,7 @@ export default function Analytics() {
     // would look absent. Branch filtering happens below, per date.
     
     fetchRecords(filters).then(r => { setRecords(r); setLoading(false) })
-  }, [view, curDate, room])
+  }, [view, curDate, room, allowed])
 
   // ── helpers ────────────────────────────────────────────────────────────────
   const filteredEmps = room === 'all' ? emps : emps.filter(e => e.showroom === room)
@@ -697,6 +719,32 @@ export default function Analytics() {
     statRow:  { display:'flex', justifyContent:'space-between', fontSize:12 },
   }
 
+  // Holding screen. Until the guard has answered, the page shows nothing of
+  // substance — no staff names, no figures, no charts.
+  if (allowed !== true) {
+    return (
+      <>
+        <Head><title>Idealz Analytics</title><meta name="viewport" content="width=device-width,initial-scale=1"/></Head>
+        <div style={{ minHeight:'100vh', display:'flex', alignItems:'center', justifyContent:'center',
+                      fontFamily:'system-ui,-apple-system,sans-serif', background:'#FAF9F5', padding:24 }}>
+          <div style={{ textAlign:'center', maxWidth:360 }}>
+            {allowed === null
+              ? <div style={{ color:'#8A8982', fontSize:'0.9rem' }}>Checking access…</div>
+              : <>
+                  <div style={{ fontSize:'2rem', marginBottom:10 }}>🔒</div>
+                  <div style={{ fontWeight:600, color:'#201F1C', marginBottom:6 }}>Admin only</div>
+                  <div style={{ color:'#5F5E5A', fontSize:'0.84rem', lineHeight:1.55 }}>
+                    Analytics is restricted to Admin / HR accounts. Taking you back…
+                  </div>
+                  <a href="/" style={{ display:'inline-block', marginTop:16, padding:'8px 18px', borderRadius:8,
+                       background:'#1A6FE8', color:'#fff', textDecoration:'none', fontSize:'0.84rem' }}>Go to Attendance</a>
+                </>}
+          </div>
+        </div>
+      </>
+    )
+  }
+
   return (
     <>
       <Head><title>Idealz Analytics</title><meta name="viewport" content="width=device-width,initial-scale=1"/></Head>
@@ -708,7 +756,16 @@ export default function Analytics() {
             <div style={{ width:8, height:8, borderRadius:'50%', background:'var(--accent)', boxShadow:'0 0 12px var(--accent)' }}/>
             IDEALZ · ATTEND
           </a>
-          <span style={{ fontSize:14, fontWeight:500, color:'var(--color-text-secondary)' }}>Analytics</span>
+          <div style={{ display:'flex', alignItems:'center', gap:12 }}>
+            <span style={{ fontSize:14, fontWeight:500, color:'var(--color-text-secondary)' }}>Analytics</span>
+            {session && <span style={{ fontSize:12, color:'var(--color-text-secondary)' }}>
+              {session.name} · Admin
+            </span>}
+            <button onClick={()=>{ clearSession(); router.replace('/login') }}
+              style={{ padding:'4px 12px', border:'0.5px solid var(--color-border-tertiary)', borderRadius:8,
+                       background:'var(--color-background-primary)', color:'var(--color-text-secondary)',
+                       fontSize:12, cursor:'pointer', fontFamily:'inherit' }}>Sign out</button>
+          </div>
         </nav>
 
         <div style={{ padding:24, maxWidth:1200, margin:'0 auto' }}>
