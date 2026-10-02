@@ -87,13 +87,18 @@ async function fetchEmployees() {
 
 // ── derive per-employee day stats ─────────────────────────────────────────────
 function deriveStats(empId, dateRecords, showroom, staffType='showroom') {
-  const shift = getShift(showroom, staffType)
-  const sMin = toMin(shift.start), eMin = toMin(shift.end)
   const recs = dateRecords.filter(r => r.empId === empId)
   if (!recs.length) return null
 
   const arrRec  = recs.find(r => r.type === 'arrive')
   const depRec  = recs.find(r => r.type === 'depart')
+
+  // Hours follow the branch actually worked that day, so someone covering
+  // at Prime is judged against Prime's 09:45, not their home branch's 10:00.
+  const workedAt  = arrRec?.showroom || depRec?.showroom || showroom
+  const covering  = workedAt !== showroom
+  const shift = getShift(workedAt, staffType)
+  const sMin = toMin(shift.start), eMin = toMin(shift.end)
   const leaveRecs = recs.filter(r => r.type === 'leave')
 
   const arrive  = arrRec  ? toMin(arrRec.time)  : null
@@ -111,7 +116,7 @@ function deriveStats(empId, dateRecords, showroom, staffType='showroom') {
   const shiftMin  = eMin - sMin
   const halfDay   = workMin != null && workMin > 0 && workMin < shiftMin / 2
 
-  return { arrive, depart, lateBy, lateSec, earlyExit, leaveDur, leaveReasons, workMin, halfDay, sMin, eMin }
+  return { arrive, depart, lateBy, lateSec, earlyExit, leaveDur, leaveReasons, workMin, halfDay, sMin, eMin, workedAt, covering }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -142,12 +147,27 @@ export default function Analytics() {
       filters.dateGte = `${y}-${String(m+1).padStart(2,'0')}-01`
       filters.dateLte = `${y}-${String(m+1).padStart(2,'0')}-${String(new Date(y,m+1,0).getDate()).padStart(2,'0')}`
     }
-    if (room !== 'all') filters.showroom = room
+    // Deliberately NOT filtered by branch here. A cover day is stored against
+    // the branch worked, so filtering server-side would hide it and the person
+    // would look absent. Branch filtering happens below, per date.
+    
     fetchRecords(filters).then(r => { setRecords(r); setLoading(false) })
   }, [view, curDate, room])
 
   // ── helpers ────────────────────────────────────────────────────────────────
   const filteredEmps = room === 'all' ? emps : emps.filter(e => e.showroom === room)
+
+  // Who counts as "this branch" on a given date:
+  //   worked here that day (including cover from another branch), or
+  //   based here and did not work anywhere (so they show as absent here).
+  // Someone based here who covered elsewhere belongs to that branch today.
+  function rosterFor(dayRecs, forRoom) {
+    if (forRoom === 'all') return emps
+    return emps.filter(e => {
+      const arr = dayRecs.find(r => r.empId === e.empId && r.type === 'arrive')
+      return arr ? arr.showroom === forRoom : e.showroom === forRoom
+    })
+  }
 
   function navDate(dir) {
     const d = new Date(curDate)
@@ -203,7 +223,7 @@ export default function Analytics() {
     let present=0, absent=0, late=0, earlyEx=0, leaves=0, halfDays=0, totalMin=0, count=0
     dates.forEach(d => {
       const dayRecs = records.filter(r => r.date === d)
-      filteredEmps.forEach(emp => {
+      rosterFor(dayRecs, room).forEach(emp => {
         const hasArrive = dayRecs.some(r => r.empId === emp.empId && r.type === 'arrive')
         // No arrival record for this date = absent
         if (!hasArrive) { absent++; return }
@@ -241,7 +261,7 @@ export default function Analytics() {
     const dayRecs = records.filter(r => r.date === dateStr(curDate))
 
     // Each employee falls into exactly one bucket for this date
-    const tagged = filteredEmps.map(emp => {
+    const tagged = rosterFor(dayRecs, room).map(emp => {
       const s = deriveStats(emp.empId, dayRecs, emp.showroom, emp.staffType||'showroom')
       const cat = (!s || s.arrive == null) ? 'absent'
                 : s.lateSec > GRACE_SEC     ? 'late'
@@ -290,7 +310,11 @@ export default function Analytics() {
                                              borderBottom:'0.5px solid var(--color-border-tertiary)' }}>
                     <span style={{ fontSize:13 }}>{emp.name}</span>
                     <span style={{ fontSize:11, color:'var(--color-text-secondary)', whiteSpace:'nowrap' }}>
-                      {dnShort(emp.showroom)}{s && s.arrive != null ? ` · ${toStr(s.arrive)}` : ''}
+                      {dnShort(s?.workedAt || emp.showroom)}
+                      {s?.covering
+                        ? <span style={{ color:'#854F0B', fontWeight:600 }}> (cover)</span>
+                        : null}
+                      {s && s.arrive != null ? ` · ${toStr(s.arrive)}` : ''}
                       {s && s.lateSec > GRACE_SEC
                         ? <strong style={{ color:'#854F0B', marginLeft:6 }}>{fmtLate(s.lateSec)}</strong>
                         : null}
@@ -350,7 +374,11 @@ export default function Analytics() {
                 return (
                   <tr key={emp.id} style={{ ...S.tr, background: isAbsent ? 'rgba(250,236,231,0.45)' : 'transparent' }}>
                     <td style={S.td}>{emp.name}</td>
-                    <td style={S.td}>{badge(dnShort(emp.showroom),'info')} {emp.staffType==='backoffice'&&<span style={{marginLeft:4,fontSize:10,background:'#FAEEDA',color:'#854F0B',padding:'1px 6px',borderRadius:3}}>Back Office</span>}</td>
+                    <td style={S.td}>
+                      {badge(dnShort(s?.workedAt || emp.showroom),'info')}
+                      {s?.covering && <span style={{marginLeft:4,fontSize:10,background:'#FAEEDA',color:'#854F0B',padding:'1px 6px',borderRadius:3}} title={`Normally ${dnShort(emp.showroom)}`}>cover</span>}
+                      {emp.staffType==='backoffice'&&<span style={{marginLeft:4,fontSize:10,background:'#FAEEDA',color:'#854F0B',padding:'1px 6px',borderRadius:3}}>Back Office</span>}
+                    </td>
                     <td style={S.td}>{statusBadge(s)}</td>
                     <td style={{ ...S.td, color: s?.lateSec > GRACE_SEC ? '#BA7517' : 'var(--color-text-primary)' }}>{s ? toStr(s.arrive) : '—'}</td>
                     <td style={{ ...S.td, color: s?.earlyExit > 0 ? '#D85A30' : 'var(--color-text-primary)' }}>{s ? toStr(s.depart) : '—'}</td>
