@@ -110,11 +110,18 @@ function fmtGap(sec){ if(!sec||sec<=0)return'—'; return sec<60?`${sec}s`:`${Ma
    Branch filtering happens HERE, per date, not on the records beforehand.
    A cover day is stored against the branch worked, so filtering records
    first would hide it and the person would read as absent at home. */
-function buildDayRows(records, employees, room) {
-  const roster = employees.filter(e => ATT_ROLES.includes(e.role||'employee'))
+function buildDayRows(records, employees, room, empId) {
+  // The roster is what generates rows, so the employee filter has to be applied
+  // HERE. Filtering only the records leaves everyone else on the roster with a
+  // row a day and no records to fill it, which reads as absent.
+  const roster = employees
+    .filter(e => ATT_ROLES.includes(e.role||'employee'))
+    .filter(e => !empId || e.empId === empId)
   // A date counts as a working day only if something was recorded that day.
   // Walking the calendar instead would mark Poya days, Sundays and closures
   // as absence for all 30 staff.
+  // Every date the business recorded anything, for ALL staff — not just the
+  // filtered person. Otherwise their absent days have no date to appear on.
   const dates = [...new Set(records.map(r=>r.date).filter(Boolean))].sort()
   const rows = []
 
@@ -346,7 +353,7 @@ export default function Home() {
   },[])
 
   useEffect(()=>{ if(!session) return; loadAll() },[session])
-  useEffect(()=>{ if(session&&tab==='report') loadReports() },[tab,fEmp,fFrom,fTo])
+  useEffect(()=>{ if(session&&tab==='report') loadReports() },[tab,fFrom,fTo])
 
   async function loadAll() {
     const allowedRoom=getAllowedShowroom(session)
@@ -603,11 +610,13 @@ export default function Home() {
       const snap=await getDocs(collection(db,'records'))
       let data=snap.docs.map(d=>({id:d.id,...d.data()}))
       if(session?.role==='manager') data=data.filter(r=>r.showroom===session.showroom)
-      if(fEmp)   data=data.filter(r=>r.empId===fEmp)
-      // Branch and type are deliberately NOT applied here. A cover day is
-      // stored against the branch worked, so filtering it out now would make
-      // the person read as absent at their home branch. Both are applied
-      // further down, where the day rows know about cover.
+      // Employee, branch and type are deliberately NOT applied here.
+      // The whole collection is read either way, so narrowing now saves
+      // nothing and costs accuracy: the day rows need every employee's
+      // records to know which dates were working days at all. A cover day is
+      // A cover day is also stored against the branch worked, so filtering
+      // by branch now would make the person read as absent at home.
+      // All three are applied below, where the day rows know about cover.
       // Dates are YYYY-MM-DD, so string comparison is already chronological
       if(fFrom)  data=data.filter(r=>r.date>=fFrom)
       if(fTo)    data=data.filter(r=>r.date<=fTo)
@@ -773,9 +782,9 @@ export default function Home() {
   const roleColor={employee:'#6b6b8a',manager:'#38b6ff',admin:'#a78bfa',backoffice:'#f7c948'}
 
   // Both views and the Excel export come off these three lines
-  const dayRows = buildDayRows(allRecs, employees, fRoom)
+  const dayRows = buildDayRows(allRecs, employees, fRoom, fEmp)
   const rptKPI  = dayRowKPIs(dayRows)
-  const rawRecs = allRecs.filter(r=>(!fRoom||r.showroom===fRoom)&&(!fType||r.type===fType))
+  const rawRecs = allRecs.filter(r=>(!fRoom||r.showroom===fRoom)&&(!fEmp||r.empId===fEmp)&&(!fType||r.type===fType))
 
   return (<>
     <Head>
