@@ -1,11 +1,8 @@
 import '../styles/globals.css'
-import { useEffect } from 'react'
 
+// No auto-seed. The employees collection is populated and managed from the
+// Admin tab. Calling /api/seed here is what kept recreating the HR Admin
+// account after it was deleted in Firestore.
 export default function App({ Component, pageProps }) {
-  useEffect(() => {
-    // Seed admin account on first ever load
-    fetch('/api/seed', { method: 'POST' }).catch(() => {})
-  }, [])
-
   return <Component {...pageProps} />
 }
