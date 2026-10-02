@@ -472,7 +472,9 @@ export default function Home() {
     // Group by employee+date
     const grouped={}
     allRecs.forEach(r=>{
-      const k=`${r.empName}||${r.showroom}||${r.date}`
+      // Keyed by employee+date only. Including the branch would split a
+      // Prime-in / Marino-out day into two half-rows.
+      const k=`${r.empId}||${r.date}`
       if(!grouped[k]) grouped[k]=[]
       grouped[k].push(r)
     })
@@ -489,7 +491,11 @@ export default function Home() {
       const leaveDurTotal=leaves.reduce((a,r)=>a+(parseInt(r.duration)||0),0)
       const leaveRsn=leaves.map(r=>r.reason).filter(Boolean).join('; ')
       const emp=employees.find(e=>e.empId===r0.empId)||{}
-      const [shStart,shEnd]=getShiftTimes(r0.showroom,emp.staffType||'showroom')
+      // Day belongs to the branch they checked in at
+      const workedAt   = arrives[0]?.showroom || departs[0]?.showroom || r0.showroom
+      const departedAt = departs[0]?.showroom || null
+      const crossBranch= !!(arrives[0] && departs[0] && arrives[0].showroom !== departs[0].showroom)
+      const [shStart,shEnd]=getShiftTimes(workedAt,emp.staffType||'showroom')
       const sMin=toMin(shStart),eMin=toMin(shEnd)
       const aMin=toMin(arrive),dMin=toMin(depart)
       const lateBy=aMin&&aMin>sMin?aMin-sMin:0
@@ -499,7 +505,9 @@ export default function Home() {
       const otMin=workMin!=null?workMin-targetMin:null
       const status=!arrive?'Absent':workMin&&workMin<targetMin/2?'Half Day':lateBy>15?'Late':'Present'
       dailyRows.push({
-        Employee:r0.empName,Showroom:dnShort(r0.showroom),Date:r0.date,
+        Employee:r0.empName,Showroom:dnShort(workedAt),
+        'Left From':crossBranch?dnShort(departedAt):'',
+        Date:r0.date,
         Day:r0.date?new Date(r0.date).toLocaleDateString('en-GB',{weekday:'short'}):'',
         Status:status,'Arrive Time':arrive||'—','Depart Time':depart||'—',
         'Shift Start':shStart,'Shift End':shEnd,
@@ -514,10 +522,10 @@ export default function Home() {
     dailyRows.sort((a,b)=>a.Showroom?.localeCompare(b.Showroom)||a.Employee?.localeCompare(b.Employee)||a.Date?.localeCompare(b.Date))
 
     // Sheet 1: Daily Attendance
-    const cols1=['Employee','Showroom','Date','Day','Status','Arrive Time','Depart Time','Shift Start','Shift End','Late By','Early Exit','Short Leave','Leave Reason','Work Hours','Target Hours','OT / Short','OT Flag']
+    const cols1=['Employee','Showroom','Left From','Date','Day','Status','Arrive Time','Depart Time','Shift Start','Shift End','Late By','Early Exit','Short Leave','Leave Reason','Work Hours','Target Hours','OT / Short','OT Flag']
     const ws1Data=[cols1,...dailyRows.map(r=>cols1.map(c=>r[c]))]
     const ws1=XL.utils.aoa_to_sheet(ws1Data)
-    ws1['!cols']=[22,12,11,8,9,10,10,9,9,8,10,10,22,13,12,12,9].map(w=>({wch:w}))
+    ws1['!cols']=[22,12,11,11,8,9,10,10,9,9,8,10,10,22,13,12,12,9].map(w=>({wch:w}))
     cols1.forEach((_,ci)=>{const ref=XL.utils.encode_cell({r:0,c:ci});if(ws1[ref])ws1[ref].s={font:{bold:true,color:{rgb:'FFFFFF'},sz:10},fill:{patternType:'solid',fgColor:{rgb:'1A6FE8'}},alignment:{horizontal:'center'}}})
     XL.utils.book_append_sheet(wb,ws1,'Daily Attendance')
 
