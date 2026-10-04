@@ -3,63 +3,46 @@ import Head from 'next/head'
 import { useRouter } from 'next/router'
 import { saveSession, getSession } from '../lib/auth'
 import { signInWithToken } from '../lib/ensureAuth'
+import { startRegistration, startAuthentication } from '@simplewebauthn/browser'
 
 // This page no longer reads the employees collection. It cannot: PINs are
 // checked on the server by /api/login, which returns a Firebase token only
 // after the PIN matches. Nothing secret passes through the browser.
 
-async function checkBiometricAvailable() {
-  try {
-    if (!window.PublicKeyCredential) return false
-    return await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable()
-  } catch { return false }
+// The device check is now decided by the server.
+//
+// /api/login says which ceremony to run and hands over a signed ticket; the
+// browser performs the ceremony and posts the result to /api/webauthn/verify,
+// which checks the signature against the public key stored in Firestore and
+// only then issues the Firebase token.
+//
+// Nothing here can grant access. If this code lied and claimed success, no
+// token would appear, because the token comes from the server's own check.
+async function runDeviceCeremony(mode, ticket, options) {
+  const response = mode === 'register'
+    ? await startRegistration({ optionsJSON: options })
+    : await startAuthentication({ optionsJSON: options })
+
+  const r = await fetch('/api/webauthn/verify', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ticket, response }),
+  })
+  const data = await r.json().catch(()=>({}))
+  if (!r.ok) throw new Error(data?.error || 'Device check failed.')
+  return data
 }
 
-// Device binding, not identity proof.
-//
-// Once this device has enrolled a credential for an employee, that credential
-// must be used — a failed or cancelled scan now blocks the login instead of
-// waving it through, which is what the previous version did on every error.
-//
-// Returns: 'ok' | 'enrolled' | 'failed' | 'unsupported'
-async function deviceCheck(empId) {
-  if (!(await checkBiometricAvailable())) return 'unsupported'
-
-  const challenge = new Uint8Array(32); crypto.getRandomValues(challenge)
-  const key = `idealz_cred_${empId}`
-  let existing = null
-  try { existing = localStorage.getItem(key) } catch {}
-
-  if (existing) {
-    try {
-      const credId = Uint8Array.from(atob(existing), c => c.charCodeAt(0))
-      await navigator.credentials.get({ publicKey: {
-        challenge, timeout: 30000, userVerification: 'required',
-        rpId: location.hostname, allowCredentials: [{ type: 'public-key', id: credId }],
-      }})
-      return 'ok'
-    } catch {
-      // Enrolled on this device but the scan did not pass. Do not continue.
-      return 'failed'
-    }
-  }
-
-  // First time on this device — enrol, so future logins here are checked.
-  try {
-    const cred = await navigator.credentials.create({ publicKey: {
-      challenge, rp: { name: 'Idealz Attendance', id: location.hostname },
-      user: { id: new TextEncoder().encode(empId), name: empId, displayName: empId },
-      pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
-      timeout: 30000,
-      authenticatorSelection: { authenticatorAttachment: 'platform', userVerification: 'required', residentKey: 'preferred' },
-    }})
-    try { localStorage.setItem(key, btoa(String.fromCharCode(...new Uint8Array(cred.rawId)))) } catch {}
-    return 'enrolled'
-  } catch {
-    // Could not enrol (declined, or the device refused). The PIN already
-    // passed on the server, so let them in rather than locking them out.
-    return 'unsupported'
-  }
+// Turns the browser's WebAuthn errors into something a shop assistant can act on
+function deviceErrorText(err, mode) {
+  const n = err?.name || ''
+  if (n === 'NotAllowedError')  return mode === 'register'
+    ? 'Face ID setup was cancelled. It is required to sign in.'
+    : 'Face ID / fingerprint was cancelled or did not match.'
+  if (n === 'InvalidStateError') return 'This device is already registered to another account on this phone.'
+  if (n === 'NotSupportedError' || n === 'AbortError')
+    return 'This device has no Face ID or fingerprint. Ask your Admin to allow PIN-only sign in for you.'
+  return err?.message || 'Device check failed. Try again.'
 }
 
 export default function Login() {
@@ -111,6 +94,7 @@ export default function Login() {
     if (full.length < 4 || loading) return
     setLoading(true); setError('')
 
+    // Step one: the PIN, checked on the server.
     let data
     try {
       const r = await fetch('/api/login', {
@@ -124,20 +108,31 @@ export default function Login() {
       setLoading(false)
       return wrongPin('Connection error. Check your internet.')
     }
+    setLoading(false)
 
-    // PIN is confirmed by the server at this point.
-    setLoading(false); setStep('bio'); setBio('scanning')
+    // An account the admin has exempted gets its token straight away.
+    if (data.mode === 'exempt') { setStep('bio'); setBio('success'); return finish(data) }
 
-    const result = await deviceCheck(data.employee.empId)
-    if (result === 'failed') {
+    // Step two: the device must prove itself before any token exists.
+    setStep('bio'); setBio(data.mode === 'register' ? 'enrolling' : 'scanning')
+
+    let verified
+    try {
+      verified = await runDeviceCeremony(data.mode, data.ticket, data.options)
+    } catch (err) {
       setBio('fail')
-      setTimeout(()=>wrongPin('Face ID / fingerprint did not match this device.'), 900)
+      const msg = err?.name ? deviceErrorText(err, data.mode) : (err?.message || 'Device check failed.')
+      setTimeout(()=>wrongPin(msg), 900)
       return
     }
 
     setBio('success')
+    return finish(verified)
+  }
+
+  async function finish(data) {
     try {
-      // Sign in to Firebase first — the next page starts reading data at once.
+      // Sign in to Firebase first — the next page reads data immediately.
       await signInWithToken(data.token)
       saveSession(data.employee)
       setTimeout(()=>router.replace('/'), 500)
@@ -264,19 +259,21 @@ export default function Login() {
           {step==='bio'&&(
             <div style={{ textAlign:'center', padding:'20px 0' }}>
               <div style={{ width:100, height:100, borderRadius:'50%', border:`3px solid ${bioStatus==='success'?'#16a34a':bioStatus==='fail'?'#dc2626':'#1a6fe8'}`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:'2.8rem', margin:'0 auto 20px', background: bioStatus==='success'?'#dcfce7':bioStatus==='fail'?'#fee2e2':'#e8f1fd', transition:'all .3s' }}>
-                {bioStatus==='success'?'✅':bioStatus==='fail'?'❌':'👤'}
+                {bioStatus==='success'?'✅':bioStatus==='fail'?'❌':bioStatus==='enrolling'?'🔐':'👤'}
               </div>
               <h2 style={{ fontSize:'1.4rem', fontWeight:700, color:'#0f172a', marginBottom:8 }}>
-                {bioStatus==='scanning'?'Confirm it is you':bioStatus==='success'?'Verified!':'Not matched'}
+                {bioStatus==='enrolling'?'Set up Face ID':bioStatus==='scanning'?'Confirm it is you':bioStatus==='success'?'Verified!':'Not matched'}
               </h2>
               <p style={{ color:'#64748b', fontSize:'0.85rem' }}>
-                {bioStatus==='scanning'?'Face ID or fingerprint, if your device has it':bioStatus==='success'?'Signing you in…':'Going back to PIN…'}
+                {bioStatus==='enrolling'?'This is your first sign in on this device. Register your Face ID or fingerprint.'
+                 :bioStatus==='scanning'?'Face ID or fingerprint — required to sign in'
+                 :bioStatus==='success'?'Signing you in…':'Going back to PIN…'}
               </p>
             </div>
           )}
 
           <div style={{ textAlign:'center', marginTop:32, fontSize:'0.72rem', color:'#94a3b8' }}>
-            PIN checked on our server · never stored in your browser
+            PIN and Face ID both verified on our server
           </div>
         </div>
       </div>
