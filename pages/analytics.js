@@ -3,6 +3,7 @@ import Head from 'next/head'
 import { useRouter } from 'next/router'
 import { db } from '../lib/firebase'
 import { getSession, clearSession } from '../lib/auth'
+import { signOutEverywhere } from '../lib/ensureAuth'
 import { collection, getDocs, query, where } from 'firebase/firestore'
 
 const SHOWROOMS = [
@@ -761,7 +762,7 @@ export default function Analytics() {
             {session && <span style={{ fontSize:12, color:'var(--color-text-secondary)' }}>
               {session.name} · Admin
             </span>}
-            <button onClick={()=>{ clearSession(); router.replace('/login') }}
+            <button onClick={async()=>{ clearSession(); await signOutEverywhere(); router.replace('/login') }}
               style={{ padding:'4px 12px', border:'0.5px solid var(--color-border-tertiary)', borderRadius:8,
                        background:'var(--color-background-primary)', color:'var(--color-text-secondary)',
                        fontSize:12, cursor:'pointer', fontFamily:'inherit' }}>Sign out</button>
