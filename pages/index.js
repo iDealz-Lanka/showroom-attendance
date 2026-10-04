@@ -266,17 +266,21 @@ async function fbGetEmployees() {
   try { const s=await getDocs(query(collection(db,'employees'),orderBy('name'))); return s.docs.map(d=>({id:d.id,...d.data()})) }
   catch { const s=await getDocs(collection(db,'employees')); return s.docs.map(d=>({id:d.id,...d.data()})).sort((a,b)=>a.name.localeCompare(b.name)) }
 }
-async function fbGetTodayRecords(showroom=null) {
+// The query has to match what the rules allow, not merely overlap with it.
+// Firestore refuses a whole query if any document it could return is off
+// limits — it does not quietly drop those rows. So an employee must ask for
+// their own records by empId, and a manager for their branch; asking for
+// everything and filtering afterwards fails outright.
+async function fbGetTodayRecords(session) {
+  const constraints=[where('date','==',today())]
+  if(session?.role==='employee')     constraints.push(where('empId','==',session.empId))
+  else if(session?.role==='manager') constraints.push(where('showroom','==',session.showroom))
   try {
-    const constraints=[where('date','==',today())]
-    if(showroom) constraints.push(where('showroom','==',showroom))
     const s=await getDocs(query(collection(db,'records'),...constraints))
     return s.docs.map(d=>({id:d.id,...d.data()}))
-  } catch {
-    const s=await getDocs(collection(db,'records'))
-    let data=s.docs.map(d=>({id:d.id,...d.data()})).filter(r=>r.date===today())
-    if(showroom) data=data.filter(r=>r.showroom===showroom)
-    return data
+  } catch (err) {
+    console.error('[records] today query refused:', err?.code||err)
+    return []
   }
 }
 
@@ -393,8 +397,7 @@ export default function Home() {
   useEffect(()=>{ if(session&&tab==='report') loadReports() },[tab,fFrom,fTo])
 
   async function loadAll() {
-    const allowedRoom=getAllowedShowroom(session)
-    const [emps,recs]=await Promise.all([fbGetEmployees(),fbGetTodayRecords(allowedRoom)])
+    const [emps,recs]=await Promise.all([fbGetEmployees(),fbGetTodayRecords(session)])
     const visibleEmps=session.role==='employee'?emps.filter(e=>e.empId===session.empId):session.role==='manager'?emps.filter(e=>e.showroom===session.showroom):emps
     setEmps(visibleEmps)
     setTodayRecs(recs)
@@ -644,9 +647,16 @@ export default function Home() {
   async function loadReports() {
     setLoading(true)
     try {
-      const snap=await getDocs(collection(db,'records'))
+      // A manager may only read their own branch, so the branch has to be in
+      // the query. Fetching everything and filtering here is what made the
+      // Excel export come back empty for them — Firestore rejected the query
+      // outright rather than returning a subset.
+      const constraints = session?.role==='manager'
+        ? [where('showroom','==',session.showroom)] : []
+      const snap=await getDocs(constraints.length
+        ? query(collection(db,'records'), ...constraints)
+        : collection(db,'records'))
       let data=snap.docs.map(d=>({id:d.id,...d.data()}))
-      if(session?.role==='manager') data=data.filter(r=>r.showroom===session.showroom)
       // Employee, branch and type are deliberately NOT applied here.
       // The whole collection is read either way, so narrowing now saves
       // nothing and costs accuracy: the day rows need every employee's
@@ -659,7 +669,12 @@ export default function Home() {
       if(fTo)    data=data.filter(r=>r.date<=fTo)
       if(fType)  data=data.filter(r=>r.type===fType)
       setAllRecs(data.sort((a,b)=>b.createdAt-a.createdAt))
-    } catch { showToast('Error loading records.','error') }
+    } catch (err) {
+      console.error('[reports] query refused:', err?.code||err)
+      showToast(err?.code==='permission-denied'
+        ? 'You do not have permission to read these records.'
+        : 'Error loading records.','error')
+    }
     setLoading(false)
   }
 
