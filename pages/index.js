@@ -78,6 +78,18 @@ function findBranchAt(lat, lng) {
   return best ? { room: best, distance: Math.round(bestDist) } : null
 }
 
+// Closest branch regardless of radius, so the page can say how far away they
+// are instead of staying silent until they tap and get rejected.
+function nearestBranch(lat, lng) {
+  let best = null, bestDist = Infinity
+  for (const name of Object.keys(SHOWROOM_LOCATIONS)) {
+    const loc = SHOWROOM_LOCATIONS[name]
+    const d = getDistance(loc.lat, loc.lng, lat, lng)
+    if (d < bestDist) { best = name; bestDist = d }
+  }
+  return best ? { room: best, distance: Math.round(bestDist) } : null
+}
+
 function getShift(showroom, staffType='showroom') {
   const sh=SHIFTS[showroom]; if(!sh) return {start:'09:00',end:'18:00'}
   return sh[staffType]||sh.showroom
@@ -315,6 +327,7 @@ export default function Home() {
   const [actionLoading, setActionLoading] = useState(false) // prevents double tap
   const [detecting, setDetecting]   = useState(false) // locating the branch on open
   const [detectFailed, setDetectFailed] = useState(false)
+  const [awayFrom, setAwayFrom] = useState(null) // {room,distance} when not at any branch
 
   useEffect(()=>{
     setMounted(true)
@@ -327,22 +340,33 @@ export default function Home() {
 
   // Employees do not pick a branch — GPS says where they are.
   // Covering at another store just works, with no admin change needed.
-  useEffect(()=>{
-    if(!session || session.role!=='employee') return
+  // Employees do not pick a branch — GPS says where they are.
+  // Returns a cancel function so the effect and the Check again button
+  // can share one implementation.
+  function detectBranch() {
+    if(!session || session.role!=='employee') return ()=>{}
     let cancelled=false
     setDetecting(true); setDetectFailed(false)
     getCurrentPosition()
       .then(pos=>{
         if(cancelled) return
         const found=findBranchAt(pos.lat,pos.lng)
-        // At a branch -> use it. Not at any -> fall back to their own,
-        // so tapping Arrive gives the usual distance message.
-        setSelRoom(found ? found.room : session.showroom)
+        if(found){
+          setSelRoom(found.room); setAwayFrom(null)
+        } else {
+          // Not inside any branch. Fall back to their own so the shift times
+          // and the card still make sense, and record how far off they are so
+          // the page can say so before they tap anything.
+          setSelRoom(session.showroom)
+          setAwayFrom(nearestBranch(pos.lat,pos.lng))
+        }
       })
-      .catch(()=>{ if(!cancelled){ setSelRoom(session.showroom); setDetectFailed(true) } })
+      .catch(()=>{ if(!cancelled){ setSelRoom(session.showroom); setAwayFrom(null); setDetectFailed(true) } })
       .then(()=>{ if(!cancelled) setDetecting(false) })
     return ()=>{ cancelled=true }
-  },[session])
+  }
+
+  useEffect(()=>detectBranch(),[session])
 
   useEffect(()=>{
     const t=setInterval(()=>{
@@ -899,6 +923,25 @@ export default function Home() {
           <div style={{marginBottom:16,padding:'10px 16px',borderRadius:10,background:'#fef3c7',border:'1px solid #fde68a',display:'flex',alignItems:'center',gap:10,fontSize:'0.82rem',color:'#92400e'}}>
             <span style={{fontSize:'1.1rem'}}>🔄</span>
             <span>You are at <strong>{dn(selRoom)}</strong> today — covering, not your usual branch. Shift times follow {dnShort(selRoom)}.</span>
+          </div>
+        )}
+        {session.role==='employee'&&!detecting&&awayFrom&&(
+          <div style={{marginBottom:16,padding:'12px 16px',borderRadius:10,background:'#FAECE7',border:'1px solid #F0CDBF',fontSize:'0.82rem',color:'#993C1D'}}>
+            <div style={{display:'flex',alignItems:'flex-start',gap:10}}>
+              <span style={{fontSize:'1.1rem',lineHeight:1.3}}>📍</span>
+              <div style={{flex:1}}>
+                <div style={{fontWeight:600,marginBottom:3}}>You are not at a showroom</div>
+                <div style={{lineHeight:1.5}}>
+                  Nearest is <strong>{dn(awayFrom.room)}</strong>, about {awayFrom.distance.toLocaleString()}m away.
+                  Check in and out only works within {SHOWROOM_LOCATIONS[awayFrom.room]?.radius||50}m of the entrance.
+                </div>
+                <button onClick={()=>detectBranch()} disabled={detecting}
+                  style={{marginTop:9,padding:'6px 14px',borderRadius:8,border:'1px solid #E0BCAB',background:'#fff',
+                          color:'#993C1D',fontSize:'0.78rem',cursor:'pointer',fontFamily:'inherit'}}>
+                  Check my location again
+                </button>
+              </div>
+            </div>
           </div>
         )}
         {session.role==='employee'&&!detecting&&detectFailed&&(
