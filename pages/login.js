@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import Head from 'next/head'
 import { useRouter } from 'next/router'
-import { saveSession, getSession } from '../lib/auth'
+import { saveSession, getSession, storageAvailable } from '../lib/auth'
 import { signInWithToken } from '../lib/ensureAuth'
 import { startRegistration, startAuthentication } from '@simplewebauthn/browser'
 
@@ -131,15 +131,27 @@ export default function Login() {
   }
 
   async function finish(data) {
-    try {
-      // Sign in to Firebase first — the next page reads data immediately.
-      await signInWithToken(data.token)
-      saveSession(data.employee)
-      setTimeout(()=>router.replace('/'), 500)
-    } catch {
+    // Checked before signing in, because Private Browsing is the usual cause
+    // and the message should say so rather than blaming the network.
+    if (!storageAvailable()) {
       setBio('fail')
-      setTimeout(()=>wrongPin('Signed in, but could not reach the database. Try again.'), 900)
+      setTimeout(()=>wrongPin('Private Browsing stops this site saving your session. Open it in a normal tab and sign in again.'), 900)
+      return
     }
+
+    try {
+      // Firebase first — the next page starts reading data immediately.
+      await signInWithToken(data.token)
+    } catch (err) {
+      setBio('fail')
+      const code = err?.code || err?.message || 'unknown'
+      console.error('[login] firebase sign-in failed:', code, err)
+      setTimeout(()=>wrongPin(`Firebase refused the session (${code}). Show this to your admin.`), 900)
+      return
+    }
+
+    saveSession(data.employee)       // cannot throw
+    setTimeout(()=>router.replace('/'), 500)
   }
 
   const filled = pin.filter(p=>p!=='').length
