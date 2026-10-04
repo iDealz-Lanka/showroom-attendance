@@ -4,6 +4,7 @@ import { useRouter } from 'next/router'
 import { db, track } from '../lib/firebase'
 import { collection, getDocs, addDoc, deleteDoc, doc, query, orderBy, where, updateDoc } from 'firebase/firestore'
 import { getSession, clearSession, canViewReports, canManageEmployees, canViewAnalytics, getAllowedShowroom } from '../lib/auth'
+import { idToken, signOutEverywhere } from '../lib/ensureAuth'
 
 const SHOWROOMS = ['Idealz Marino', 'Idealz Liberty Plaza', 'Idealz Prime']
 // Display names only — Firebase still stores the keys above. Never change the keys.
@@ -766,6 +767,21 @@ export default function Home() {
     showToast(`✅ Excel downloaded — ${rows.length} day rows, ${mv.length} branch moves`)
   }
 
+  // PINs never go into the employees collection any more. This route hashes
+  // them on the server and writes them to /credentials, which no browser can
+  // read. It proves the caller is an admin with their Firebase ID token.
+  async function setPinOnServer(empIdValue, pinValue) {
+    const token = await idToken()
+    if (!token) throw new Error('Your session expired. Sign in again.')
+    const r = await fetch('/api/set-pin', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ empId: empIdValue, pin: pinValue }),
+    })
+    const data = await r.json().catch(()=>({}))
+    if (!r.ok) throw new Error(data?.error || 'Could not set the PIN.')
+  }
+
   async function addEmployee() {
     if(!newName||!newId) return showToast('Fill in name and Employee ID.','error')
     if(!newPin||newPin.length<4) return showToast('PIN must be at least 4 digits.','error')
@@ -774,11 +790,13 @@ export default function Home() {
     if(allEmps.find(e=>e.empId===newId)) return showToast('Employee ID already exists.','error')
     const color=COLORS[Math.floor(Math.random()*COLORS.length)]
     try {
-      await addDoc(collection(db,'employees'),{empId:newId,name:newName,showroom:newRoom,staffType:newST,role:newRole,pin:newPin,color,createdAt:Date.now()})
+      // No pin field — the employee document never holds one.
+      await addDoc(collection(db,'employees'),{empId:newId,name:newName,showroom:newRoom,staffType:newST,role:newRole,color,createdAt:Date.now()})
+      await setPinOnServer(newId,newPin)
       showToast(`✅ ${newName} added!`)
       setNewName('');setNewId('');setNewPin('')
       loadAll()
-    } catch { showToast('Error adding employee.','error') }
+    } catch(err) { showToast(err?.message||'Error adding employee.','error') }
   }
 
   async function removeEmployee(id,name) {
@@ -793,11 +811,15 @@ export default function Home() {
   async function savePinEdit(empDocId) {
     if(!editPinVal||editPinVal.length<4) return showToast('PIN must be at least 4 digits.','error')
     if(!/^\d+$/.test(editPinVal)) return showToast('PIN must be digits only.','error')
-    try { await updateDoc(doc(db,'employees',empDocId),{pin:editPinVal}); showToast('✅ PIN updated!');setEditPinId(null);setEditPinVal('');loadAll() }
-    catch { showToast('Error updating PIN.','error') }
+    const emp=employees.find(e=>e.id===empDocId)
+    if(!emp) return showToast('Employee not found.','error')
+    try { await setPinOnServer(emp.empId,editPinVal); showToast('✅ PIN updated!');setEditPinId(null);setEditPinVal('');loadAll() }
+    catch(err) { showToast(err?.message||'Error updating PIN.','error') }
   }
 
-  function logout(){clearSession();router.replace('/login')}
+  // Clear the Firebase session as well — without this the signed token stays
+  // valid and the database would still answer the previous user.
+  async function logout(){ clearSession(); await signOutEverywhere(); router.replace('/login') }
 
   if(!mounted||!session) return <div style={{color:'#64748b',textAlign:'center',padding:60,fontFamily:'Inter,sans-serif'}}>Loading…</div>
 
