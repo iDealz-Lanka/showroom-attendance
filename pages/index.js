@@ -360,7 +360,9 @@ export default function Home() {
   // Returns a cancel function so the effect and the Check again button
   // can share one implementation.
   function detectBranch() {
-    if(!session || session.role!=='employee') return ()=>{}
+    // Every role checks themselves in now, so everyone needs the branch
+    // detected — a manager covering at another showroom included.
+    if(!session) return ()=>{}
     let cancelled=false
     setDetecting(true); setDetectFailed(false)
     getCurrentPosition()
@@ -437,6 +439,9 @@ export default function Home() {
   function showToast(msg,type='success'){setToast({msg,type});setTimeout(()=>setToast(null),3200)}
 
   const empForRoom=selRoom?employees.filter(e=>e.showroom===selRoom):employees
+  // Attendance is self-service: the only person anyone can record is
+  // themselves. Managers and admins are staff too, so this works for them.
+  const me = employees.find(e=>e.empId===session?.empId) || null
 
   async function doAction(type,empOverrideId=null) {
     // Prevent double tap — if already processing, ignore
@@ -449,12 +454,13 @@ export default function Home() {
     }
   }
 
-  async function _doAction(type,empOverrideId=null) {
-    const eid=empOverrideId||(session?.role==='employee'?employees[0]?.id:null)
-    if(!eid&&session?.role!=='employee') return showToast('Select an employee.','error')
+  async function _doAction(type) {
     if(!selRoom) return showToast('Select a showroom first.','error')
-    const emp=employees.find(e=>e.id===eid)||employees[0]
-    if(!emp) return showToast('Employee not found.','error')
+    // Nobody can record attendance for anyone else. This is what stops a
+    // stale dropdown selection turning into a departure for someone who
+    // never touched the app.
+    const emp=me
+    if(!emp) return showToast('Could not find your employee record. Reload the page.','error')
 
     // Check Firebase directly for duplicate + enforce arrive before depart
     try {
@@ -522,11 +528,9 @@ export default function Home() {
   }
 
   async function submitLeave() {
-    const eid=session?.role==='employee'?employees[0]?.id:leaveEmp
-    if(!eid) return showToast('Select an employee.','error')
     if(!selRoom) return showToast('Select a showroom first.','error')
-    const emp=employees.find(e=>e.id===eid)||employees[0]
-    if(!emp) return
+    const emp=me
+    if(!emp) return showToast('Could not find your employee record. Reload the page.','error')
     setGpsStatus('checking'); showToast('📍 Checking your location…','info')
     try {
       const pos=await getCurrentPosition()
@@ -552,15 +556,14 @@ export default function Home() {
     setLog(p=>[{...rec,id:Date.now()},...p])
     setTodayRecs(p=>{const n=[...p,rec];computeStats(employees,n);return n})
     setLeaveM(false); setLeaveR('')
+    if(session.role!=='employee') setLeaveEmp('')
     showToast(`🕐 Short leave: ${emp.name} (~${leaveDur} min)`)
   }
 
   async function submitReturn() {
-    const eid=session?.role==='employee'?employees[0]?.id:returnEmp
-    if(!eid) return showToast('Select an employee.','error')
     if(!selRoom) return showToast('Select a showroom first.','error')
-    const emp=employees.find(e=>e.id===eid)||employees[0]
-    if(!emp) return
+    const emp=me
+    if(!emp) return showToast('Could not find your employee record. Reload the page.','error')
     setGpsStatus('checking'); showToast('📍 Checking your location…','info')
     try {
       const pos=await getCurrentPosition()
@@ -578,8 +581,9 @@ export default function Home() {
     const ok=await verifyBiometric(emp.empId)
     setFpOv(false); setGpsStatus('')
     if(!ok) return showToast('Face ID / fingerprint did not match.','error')
-    const leaveRec=onLeaveEmps.find(e=>e.id===eid)?.leaveRec
-    const actualMinutes=onLeaveEmps.find(e=>e.id===eid)?.minutesGone||0
+    const mine=onLeaveEmps.find(e=>e.empId===session.empId)
+    const leaveRec=mine?.leaveRec
+    const actualMinutes=mine?.minutesGone||0
     const expectedDur=leaveRec?.duration||30
     const overdue=actualMinutes>expectedDur
     const overdueBy=overdue?actualMinutes-expectedDur:0
@@ -927,28 +931,24 @@ export default function Home() {
         </div>
       </nav>
 
-      {session.role==='employee'&&<div style={{background:'#e8f1fd',borderBottom:'1px solid #bfdbfe',padding:'8px 24px',fontSize:'0.76rem',color:'#1456b8',textAlign:'center',fontWeight:500}}>👋 Welcome, {session.name} · You can check in and out for yourself only</div>}
-      {session.role==='manager'&&<div style={{background:'#f0f9ff',borderBottom:'1px solid #bae6fd',padding:'8px 24px',fontSize:'0.76rem',color:'#0369a1',textAlign:'center',fontWeight:500}}>👔 Manager view · {dn(session.showroom)}</div>}
+      <div style={{background:'#e8f1fd',borderBottom:'1px solid #bfdbfe',padding:'8px 24px',fontSize:'0.76rem',color:'#1456b8',textAlign:'center',fontWeight:500}}>👋 Welcome, {session.name} · You check in and out for yourself only</div>
+      {session.role==='manager'&&<div style={{background:'#f0f9ff',borderBottom:'1px solid #bae6fd',padding:'8px 24px',fontSize:'0.76rem',color:'#0369a1',textAlign:'center',fontWeight:500}}>👔 Manager · reports for {dn(session.showroom)}</div>}
 
       {tab==='checkin'&&<div className="page-content" style={S.page}>
         <div className="page-h1" style={S.h1}>{session.role==='employee'?`Hi, ${session.name.split(' ')[0]}! 👋`:'Check In / Out'}</div>
         <div style={S.sub}>{session.role==='employee'?'Tap below to check in or out':'Select showroom → employee → biometric'}</div>
 
         {/* Showroom selector — employees only see their own showroom */}
-        <div className="room-grid" style={{...S.roomGrid,gridTemplateColumns:session.role==='employee'?'1fr':session.role==='manager'?'1fr':'repeat(3,1fr)'}}>
-          {SHOWROOMS.filter(s=>{
-            // Employee sees the branch GPS put them at, not a chooser
-            if(session.role==='employee') return s===(selRoom||session.showroom)
-            if(session.role==='manager') return s===session.showroom
-            return true
-          }).map((s,i)=>{
+        <div className="room-grid" style={{...S.roomGrid,gridTemplateColumns:'1fr'}}>
+          {/* One card: wherever GPS says this person is. Nobody picks a branch. */}
+          {SHOWROOMS.filter(s=> s===(selRoom||session.showroom)).map((s,i)=>{
             const icons=['🏛️','📱','🏪']
             const idx=SHOWROOMS.indexOf(s)
             const isSelected=selRoom===s
             const checkedIn=stats.byShowroom?.[s]??0
             // For employee: show their own check-in status
             const empTodayRec=todayRecs.find(r=>r.empId===session.empId&&r.type==='arrive')
-            const empCheckedIn=session.role==='employee'&&empTodayRec
+            const empCheckedIn=!!empTodayRec
             return(
               <div key={s}
                 style={{...S.roomCard,...(isSelected?S.roomOn:{}),cursor:'pointer',padding:0}}
@@ -961,14 +961,9 @@ export default function Home() {
                     {isSelected&&<span style={{fontSize:'0.65rem',color:'#fff',background:'#1a6fe8',padding:'2px 8px',borderRadius:20,fontWeight:600}}>✓ Selected</span>}
                   </div>
                   <div style={{fontWeight:700,fontSize:'0.88rem',color:isSelected?'#1a6fe8':'#0f172a',marginBottom:4}}>{dn(s)}</div>
-                  {session.role==='employee'
-                    ? <div style={{fontSize:'0.72rem',color:empCheckedIn?'#16a34a':'#64748b',fontWeight:empCheckedIn?600:400}}>
-                        {empCheckedIn?`✅ You checked in at ${empTodayRec.time}`:'Not checked in yet'}
-                      </div>
-                    : <div style={{fontSize:'0.72rem',color:'#64748b'}}>
-                        <span style={{color:'#16a34a',fontWeight:600}}>{checkedIn}</span> checked in today
-                      </div>
-                  }
+                  <div style={{fontSize:'0.72rem',color:empCheckedIn?'#16a34a':'#64748b',fontWeight:empCheckedIn?600:400}}>
+                    {empCheckedIn?`✅ You checked in at ${empTodayRec.time}`:'Not checked in yet'}
+                  </div>
                 </div>
               </div>
             )
@@ -995,25 +990,25 @@ export default function Home() {
         )}
 
         {/* Where GPS says they are */}
-        {session.role==='employee'&&detecting&&(
+        {detecting&&(
           <div style={{marginBottom:16,padding:'10px 16px',borderRadius:10,background:'#e8f1fd',border:'1px solid #bfdbfe',display:'flex',alignItems:'center',gap:10,fontSize:'0.82rem',color:'#1456b8'}}>
             <span style={{fontSize:'1.1rem'}}>📍</span>
             <span>Finding which branch you are at…</span>
           </div>
         )}
-        {session.role==='employee'&&!detecting&&atBranch&&atBranch.room===session.showroom&&(
+        {!detecting&&atBranch&&atBranch.room===session.showroom&&(
           <div style={{marginBottom:16,padding:'10px 16px',borderRadius:10,background:'#E1F5EE',border:'1px solid #B8E4D4',display:'flex',alignItems:'center',gap:10,fontSize:'0.82rem',color:'#0F6E56'}}>
             <span style={{fontSize:'1.1rem'}}>✅</span>
             <span>You are at <strong>{dn(atBranch.room)}</strong> — {atBranch.distance}m from the entrance. Ready to check in.</span>
           </div>
         )}
-        {session.role==='employee'&&!detecting&&selRoom&&selRoom!==session.showroom&&(
+        {!detecting&&selRoom&&selRoom!==session.showroom&&(
           <div style={{marginBottom:16,padding:'10px 16px',borderRadius:10,background:'#fef3c7',border:'1px solid #fde68a',display:'flex',alignItems:'center',gap:10,fontSize:'0.82rem',color:'#92400e'}}>
             <span style={{fontSize:'1.1rem'}}>🔄</span>
             <span>You are at <strong>{dn(selRoom)}</strong> today{atBranch?` — ${atBranch.distance}m from the entrance`:''} — covering, not your usual branch. Shift times follow {dnShort(selRoom)}.</span>
           </div>
         )}
-        {session.role==='employee'&&!detecting&&awayFrom&&(
+        {!detecting&&awayFrom&&(
           <div style={{marginBottom:16,padding:'12px 16px',borderRadius:10,background:'#FAECE7',border:'1px solid #F0CDBF',fontSize:'0.82rem',color:'#993C1D'}}>
             <div style={{display:'flex',alignItems:'flex-start',gap:10}}>
               <span style={{fontSize:'1.1rem',lineHeight:1.3}}>📍</span>
@@ -1032,7 +1027,7 @@ export default function Home() {
             </div>
           </div>
         )}
-        {session.role==='employee'&&!detecting&&detectFailed&&(
+        {!detecting&&detectFailed&&(
           <div style={{marginBottom:16,padding:'10px 16px',borderRadius:10,background:'#fee2e2',border:'1px solid #fca5a5',display:'flex',alignItems:'center',gap:10,fontSize:'0.82rem',color:'#dc2626'}}>
             <span style={{fontSize:'1.1rem'}}>❌</span>
             <span>Could not read your location. Turn Location on, then reload the page.</span>
@@ -1050,31 +1045,26 @@ export default function Home() {
           <div className="card-pad" style={S.card}>
             <h3 style={S.cardH}>Arrival / Departure</h3>
             {!selRoom&&<div style={S.warnBox}>👆 Select your showroom above first</div>}
-            {session.role!=='employee'&&(
-              <select style={S.sel} value={leaveEmp} onChange={e=>setLeaveEmp(e.target.value)} disabled={!selRoom}>
-                <option value="">— Select Employee —</option>
-                {empForRoom.map(e=><option key={e.id} value={e.id}>{e.name} · {ROLE_LABELS[e.staffType]||''}</option>)}
-              </select>
-            )}
-            {session.role==='employee'&&employees[0]&&(
+            {/* No employee picker. Everyone records their own attendance only. */}
+            {me&&(
               <div style={{padding:'10px 14px',background:'#f8fafc',borderRadius:10,border:'1px solid #e2e8f0',marginBottom:12,display:'flex',alignItems:'center',gap:10}}>
                 <div style={{width:34,height:34,borderRadius:'50%',background:session.color+'33',color:session.color,display:'flex',alignItems:'center',justifyContent:'center',fontWeight:700,fontSize:'0.78rem'}}>{initials(session.name)}</div>
                 <div>
-                  <div style={{fontSize:'0.85rem',fontWeight:500,color:'#0f172a'}}>{session.name}</div>
+                  <div style={{fontSize:'0.85rem',fontWeight:500,color:'#0f172a'}}>{session.name} <span style={{fontSize:'0.68rem',color:'#64748b',fontWeight:400}}>· you</span></div>
                   <div style={{fontSize:'0.7rem',color:'#64748b'}}>{getShift(selRoom||session.showroom,session.staffType).start} – {getShift(selRoom||session.showroom,session.staffType).end}</div>
                 </div>
               </div>
             )}
-            <button className="fp-btn" disabled={actionLoading} style={{...S.btn,background:'linear-gradient(135deg,#43e97b,#38f9d7)',color:'#0a0a0f',marginBottom:10,opacity:selRoom&&!actionLoading?1:0.5}} onClick={()=>{const eid=session.role==='employee'?employees[0]?.id:leaveEmp;doAction('arrive',eid)}}>
+            <button className="fp-btn" disabled={actionLoading} style={{...S.btn,background:'linear-gradient(135deg,#43e97b,#38f9d7)',color:'#0a0a0f',marginBottom:10,opacity:selRoom&&!actionLoading?1:0.5}} onClick={()=>doAction('arrive')}>
               {actionLoading?'⏳ Processing…':'👤 Face ID — Arrive'}
             </button>
-            <button className="fp-btn" disabled={actionLoading} style={{...S.btn,background:'linear-gradient(135deg,#ff6584,#ff9a4a)',color:'#0a0a0f',marginBottom:10,opacity:selRoom&&!actionLoading?1:0.5}} onClick={()=>{const eid=session.role==='employee'?employees[0]?.id:leaveEmp;doAction('depart',eid)}}>
+            <button className="fp-btn" disabled={actionLoading} style={{...S.btn,background:'linear-gradient(135deg,#ff6584,#ff9a4a)',color:'#0a0a0f',marginBottom:10,opacity:selRoom&&!actionLoading?1:0.5}} onClick={()=>doAction('depart')}>
               {actionLoading?'⏳ Processing…':'👤 Face ID — Depart'}
             </button>
             <button className="fp-btn" disabled={actionLoading} style={{...S.btn,background:'linear-gradient(135deg,#f7c948,#ff9a4a)',color:'#0a0a0f',marginBottom:10,opacity:selRoom&&!actionLoading?1:0.5}} onClick={()=>{if(!selRoom)return showToast('Select a showroom first.','error');setLeaveM(true)}}>
               🕐 Short Leave
             </button>
-            {onLeaveEmps.length>0&&(session.role==='employee'?onLeaveEmps.find(e=>e.empId===session.empId):true)&&(
+            {onLeaveEmps.find(e=>e.empId===session.empId)&&(
               <button className="fp-btn" style={{...S.btn,background:'linear-gradient(135deg,#6c63ff,#a78bfa)',color:'#fff',opacity:selRoom?1:0.5}} onClick={()=>{if(!selRoom)return showToast('Select a showroom first.','error');setReturnM(true)}}>🔙 Return from Leave</button>
             )}
           </div>
@@ -1383,7 +1373,7 @@ export default function Home() {
         <div style={S.modalBg} onClick={e=>e.target===e.currentTarget&&setLeaveM(false)}>
           <div className="modal-box" style={S.modal}>
             <h3 style={{fontSize:'1.1rem',fontWeight:700,marginBottom:16,color:'#0f172a'}}>🕐 Short Leave Request</h3>
-            {session.role!=='employee'&&<div style={{marginBottom:12}}><div style={S.inputLabel}>Employee</div><select value={leaveEmp} onChange={e=>setLeaveEmp(e.target.value)} style={S.adminInput}><option value="">— Select —</option>{empForRoom.map(e=><option key={e.id} value={e.id}>{e.name}</option>)}</select></div>}
+            <div style={{marginBottom:12,padding:'9px 12px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8,fontSize:'0.8rem',color:'#0f172a'}}>{session.name} · {dnShort(selRoom||session.showroom)}</div>
             <div style={{marginBottom:12}}><div style={S.inputLabel}>Duration</div><select value={leaveDur} onChange={e=>setLeaveDur(e.target.value)} style={S.adminInput}>{[['15','15 min'],['30','30 min'],['45','45 min'],['60','1 hour'],['90','1.5 hrs'],['120','2 hours']].map(([v,l])=><option key={v} value={v}>{l}</option>)}</select></div>
             <div style={{marginBottom:16}}><div style={S.inputLabel}>Reason</div><textarea placeholder="Brief reason…" value={leaveReason} onChange={e=>setLeaveR(e.target.value)} style={{...S.adminInput,resize:'vertical',minHeight:64}}/></div>
             <div style={{display:'flex',gap:10}}>
@@ -1410,7 +1400,7 @@ export default function Home() {
                 ))}
               </div>
             )}
-            {session.role!=='employee'&&<div style={{marginBottom:12}}><div style={S.inputLabel}>Select Employee</div><select value={returnEmp} onChange={e=>setReturnEmp(e.target.value)} style={S.adminInput}><option value="">— Select —</option>{onLeaveEmps.filter(e=>!selRoom||e.showroom===selRoom).map(e=><option key={e.id} value={e.id}>{e.name}{e.overdue?` (⚠️ ${e.overdueBy}m overdue)`:''}</option>)}</select></div>}
+            <div style={{marginBottom:12,padding:'9px 12px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8,fontSize:'0.8rem',color:'#0f172a'}}>{session.name} · back at {dnShort(selRoom||session.showroom)}</div>
             <div style={{padding:'10px 14px',background:'#e8f1fd',borderRadius:8,fontSize:'0.76rem',color:'#1456b8',marginBottom:16}}>👤 Face ID will verify your identity when you return</div>
             <div style={{display:'flex',gap:10}}>
               <button style={{padding:'12px 16px',background:'transparent',color:'#64748b',border:'1px solid #e2e8f0',borderRadius:8,cursor:'pointer'}} onClick={()=>setReturnM(false)}>Cancel</button>
