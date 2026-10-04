@@ -4,7 +4,7 @@ import { useRouter } from 'next/router'
 import { db, track } from '../lib/firebase'
 import { collection, getDocs, addDoc, deleteDoc, doc, query, orderBy, where, updateDoc } from 'firebase/firestore'
 import { getSession, clearSession, canViewReports, canManageEmployees, canViewAnalytics, getAllowedShowroom } from '../lib/auth'
-import { idToken, signOutEverywhere } from '../lib/ensureAuth'
+import { idToken, signOutEverywhere, ensureAuth } from '../lib/ensureAuth'
 
 const SHOWROOMS = ['Idealz Marino', 'Idealz Liberty Plaza', 'Idealz Prime']
 // Display names only — Firebase still stores the keys above. Never change the keys.
@@ -338,6 +338,13 @@ export default function Home() {
     setMounted(true)
     const s=getSession()
     if(!s){router.replace('/login');return}
+    // A session saved before the new login exists in this browser but carries
+    // no Firebase identity, so every read and write would be refused by the
+    // rules. Send them to sign in again rather than letting the page load and
+    // fail silently when they try to check out.
+    ensureAuth().then(user=>{
+      if(!user){ clearSession(); router.replace('/login') }
+    })
     setSession(s)
     if(s.role==='manager') setSelRoom(s.showroom)
     if(s.role==='employee') setSelRoom(s.showroom)
