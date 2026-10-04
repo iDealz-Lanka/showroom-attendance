@@ -1,9 +1,12 @@
 import { useState, useEffect, useRef } from 'react'
 import Head from 'next/head'
 import { useRouter } from 'next/router'
-import { db } from '../lib/firebase'
-import { collection, getDocs, query, where } from 'firebase/firestore'
 import { saveSession, getSession } from '../lib/auth'
+import { signInWithToken } from '../lib/ensureAuth'
+
+// This page no longer reads the employees collection. It cannot: PINs are
+// checked on the server by /api/login, which returns a Firebase token only
+// after the PIN matches. Nothing secret passes through the browser.
 
 async function checkBiometricAvailable() {
   try {
@@ -12,22 +15,51 @@ async function checkBiometricAvailable() {
   } catch { return false }
 }
 
-async function verifyBiometric(empId) {
-  const has = await checkBiometricAvailable()
-  if (!has) return true
+// Device binding, not identity proof.
+//
+// Once this device has enrolled a credential for an employee, that credential
+// must be used — a failed or cancelled scan now blocks the login instead of
+// waving it through, which is what the previous version did on every error.
+//
+// Returns: 'ok' | 'enrolled' | 'failed' | 'unsupported'
+async function deviceCheck(empId) {
+  if (!(await checkBiometricAvailable())) return 'unsupported'
+
   const challenge = new Uint8Array(32); crypto.getRandomValues(challenge)
   const key = `idealz_cred_${empId}`
-  try {
-    const existing = localStorage.getItem(key)
-    if (existing) {
-      const credId = Uint8Array.from(atob(existing), c=>c.charCodeAt(0))
-      await navigator.credentials.get({ publicKey:{ challenge, timeout:30000, userVerification:'required', rpId:location.hostname, allowCredentials:[{type:'public-key',id:credId}] } })
-    } else {
-      const cred = await navigator.credentials.create({ publicKey:{ challenge, rp:{name:'Idealz Attendance',id:location.hostname}, user:{id:new TextEncoder().encode(empId),name:empId,displayName:empId}, pubKeyCredParams:[{type:'public-key',alg:-7},{type:'public-key',alg:-257}], timeout:30000, authenticatorSelection:{authenticatorAttachment:'platform',userVerification:'required',residentKey:'preferred'} } })
-      localStorage.setItem(key, btoa(String.fromCharCode(...new Uint8Array(cred.rawId))))
+  let existing = null
+  try { existing = localStorage.getItem(key) } catch {}
+
+  if (existing) {
+    try {
+      const credId = Uint8Array.from(atob(existing), c => c.charCodeAt(0))
+      await navigator.credentials.get({ publicKey: {
+        challenge, timeout: 30000, userVerification: 'required',
+        rpId: location.hostname, allowCredentials: [{ type: 'public-key', id: credId }],
+      }})
+      return 'ok'
+    } catch {
+      // Enrolled on this device but the scan did not pass. Do not continue.
+      return 'failed'
     }
-    return true
-  } catch(e) { if(e.name==='NotAllowedError') return false; return true }
+  }
+
+  // First time on this device — enrol, so future logins here are checked.
+  try {
+    const cred = await navigator.credentials.create({ publicKey: {
+      challenge, rp: { name: 'Idealz Attendance', id: location.hostname },
+      user: { id: new TextEncoder().encode(empId), name: empId, displayName: empId },
+      pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
+      timeout: 30000,
+      authenticatorSelection: { authenticatorAttachment: 'platform', userVerification: 'required', residentKey: 'preferred' },
+    }})
+    try { localStorage.setItem(key, btoa(String.fromCharCode(...new Uint8Array(cred.rawId)))) } catch {}
+    return 'enrolled'
+  } catch {
+    // Could not enrol (declined, or the device refused). The PIN already
+    // passed on the server, so let them in rather than locking them out.
+    return 'unsupported'
+  }
 }
 
 export default function Login() {
@@ -35,7 +67,6 @@ export default function Login() {
   const [mounted, setMounted] = useState(false)
   const [step, setStep]       = useState('id')
   const [empId, setEmpId]     = useState('')
-  const [employee, setEmp]    = useState(null)
   const [pin, setPin]         = useState(['','','','','',''])
   const [error, setError]     = useState('')
   const [loading, setLoading] = useState(false)
@@ -50,45 +81,70 @@ export default function Login() {
     if(step==='pin') setTimeout(()=>pinRefs[0].current?.focus(),100)
   },[step])
 
-  async function handleIdSubmit(e) {
+  // No lookup here. Confirming an ID exists before the PIN is asked would let
+  // anyone test Employee IDs one by one.
+  function handleIdSubmit(e) {
     e?.preventDefault()
     const id = empId.trim().toUpperCase()
     if(!id) return setError('Please enter your Employee ID')
-    setLoading(true); setError('')
-    try {
-      const snap = await getDocs(query(collection(db,'employees'),where('empId','==',id)))
-      if(snap.empty) { setError('Employee ID not found.'); setLoading(false); return }
-      const emp = {id:snap.docs[0].id,...snap.docs[0].data()}
-      if(!emp.pin) { setError('No PIN set. Contact your Admin.'); setLoading(false); return }
-      setEmp(emp); setStep('pin')
-    } catch { setError('Connection error. Check your internet.') }
-    setLoading(false)
+    setEmpId(id); setError(''); setStep('pin')
   }
 
   function handlePinDigit(val,i) {
     if(!/^\d*$/.test(val)) return
     const p=[...pin]; p[i]=val.slice(-1); setPin(p); setError('')
     if(val&&i<5) pinRefs[i+1].current?.focus()
-    if(val&&i===5) checkPin([...p.slice(0,5),val.slice(-1)].join(''))
+    if(val&&i===5) submit([...p.slice(0,5),val.slice(-1)].join(''))
   }
   function handlePinKey(e,i) {
     if(e.key==='Backspace'&&!pin[i]&&i>0) pinRefs[i-1].current?.focus()
-    if(e.key==='Enter') checkPin(pin.join(''))
+    if(e.key==='Enter') submit(pin.join(''))
   }
-  async function checkPin(entered) {
-    const full = entered||pin.join('')
-    if(full.length<4) return
-    if(full===employee.pin) { setStep('bio'); await runBiometric() }
-    else {
-      setShake(true); setPin(['','','','','','']); setError('Wrong PIN. Try again.')
-      setTimeout(()=>{ setShake(false); pinRefs[0].current?.focus() },500)
+
+  function wrongPin(msg) {
+    setShake(true); setPin(['','','','','','']); setError(msg)
+    setTimeout(()=>{ setShake(false); setStep('pin'); setBio(''); pinRefs[0].current?.focus() },600)
+  }
+
+  async function submit(entered) {
+    const full = entered || pin.join('')
+    if (full.length < 4 || loading) return
+    setLoading(true); setError('')
+
+    let data
+    try {
+      const r = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ empId, pin: full }),
+      })
+      data = await r.json()
+      if (!r.ok) { setLoading(false); return wrongPin(data?.error || 'Could not sign in.') }
+    } catch {
+      setLoading(false)
+      return wrongPin('Connection error. Check your internet.')
     }
-  }
-  async function runBiometric() {
-    setBio('scanning')
-    const ok = await verifyBiometric(employee.empId)
-    if(ok) { setBio('success'); setTimeout(()=>{ saveSession(employee); router.replace('/') },800) }
-    else { setBio('fail'); setError('Biometric did not match.'); setTimeout(()=>{ setStep('pin'); setPin(['','','','','','']); setBio('') },1500) }
+
+    // PIN is confirmed by the server at this point.
+    setLoading(false); setStep('bio'); setBio('scanning')
+
+    const result = await deviceCheck(data.employee.empId)
+    if (result === 'failed') {
+      setBio('fail')
+      setTimeout(()=>wrongPin('Face ID / fingerprint did not match this device.'), 900)
+      return
+    }
+
+    setBio('success')
+    try {
+      // Sign in to Firebase first — the next page starts reading data at once.
+      await signInWithToken(data.token)
+      saveSession(data.employee)
+      setTimeout(()=>router.replace('/'), 500)
+    } catch {
+      setBio('fail')
+      setTimeout(()=>wrongPin('Signed in, but could not reach the database. Try again.'), 900)
+    }
   }
 
   const filled = pin.filter(p=>p!=='').length
@@ -106,20 +162,16 @@ export default function Login() {
 
       {/* Left panel — brand side (hidden on mobile) */}
       <div style={{ flex:'0 0 45%', background:'#1a6fe8', position:'relative', overflow:'hidden', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:48 }} className="brand-panel">
-        {/* Showroom background image */}
         <div style={{ position:'absolute', inset:0, background:'linear-gradient(135deg,#1456b8,#1a6fe8)', backgroundSize:'cover', backgroundPosition:'center', opacity:0.18 }}/>
-        {/* Blue overlay */}
         <div style={{ position:'absolute', inset:0, background:'linear-gradient(135deg, #1456b8 0%, #1a6fe8 50%, #2d7ff9 100%)', opacity:0.92 }}/>
-        {/* Pattern overlay */}
         <div style={{ position:'absolute', inset:0, backgroundImage:'radial-gradient(circle at 20% 20%, rgba(255,255,255,0.08) 0%, transparent 50%), radial-gradient(circle at 80% 80%, rgba(255,255,255,0.05) 0%, transparent 50%)' }}/>
 
         <div style={{ position:'relative', zIndex:1, textAlign:'center', maxWidth:360 }}>
           <h1 style={{ color:'#fff', fontSize:'2rem', fontWeight:800, marginBottom:12, lineHeight:1.2 }}>Attendance System</h1>
           <p style={{ color:'rgba(255,255,255,0.75)', fontSize:'1rem', lineHeight:1.6, marginBottom:40 }}>
-            Secure biometric attendance tracking for all branches
+            Secure attendance tracking for all branches
           </p>
 
-          {/* Showroom cards */}
           <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
             {[
               { name:'iDealz Prime',  icon:'🏪', loc:'Galle Rd, Colombo 4' },
@@ -144,7 +196,6 @@ export default function Login() {
       <div style={{ flex:1, background:'#f7f9fc', display:'flex', alignItems:'center', justifyContent:'center', padding:32, minHeight:'100vh' }}>
         <div style={{ width:'100%', maxWidth:400 }}>
 
-
           {/* Step 1: Employee ID */}
           {step==='id'&&(<>
             <div style={{ marginBottom:28 }}>
@@ -165,21 +216,17 @@ export default function Login() {
                 />
               </div>
               {error&&<div style={errorStyle}>{error}</div>}
-              <button type="submit" style={{ ...btnPrimary, opacity:loading?0.7:1 }} disabled={loading}>
-                {loading?'Checking…':'Continue →'}
-              </button>
+              <button type="submit" style={btnPrimary}>Continue →</button>
             </form>
           </>)}
 
           {/* Step 2: PIN */}
           {step==='pin'&&(<>
             <div style={{ display:'flex', alignItems:'center', gap:12, padding:'14px 16px', background:'#fff', borderRadius:14, border:'1.5px solid #e2e8f0', marginBottom:24, boxShadow:'0 1px 4px rgba(0,0,0,0.06)' }}>
-              <div style={{ width:44, height:44, borderRadius:'50%', background:employee?.color+'22', color:employee?.color, display:'flex', alignItems:'center', justifyContent:'center', fontWeight:700, fontSize:'0.9rem', flexShrink:0 }}>
-                {employee?.name?.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase()}
-              </div>
+              <div style={{ width:44, height:44, borderRadius:'50%', background:'#e8f1fd', color:'#1a6fe8', display:'flex', alignItems:'center', justifyContent:'center', fontWeight:700, fontSize:'1.2rem', flexShrink:0 }}>🪪</div>
               <div>
-                <div style={{ fontSize:'0.95rem', fontWeight:600, color:'#0f172a' }}>{employee?.name}</div>
-                <div style={{ fontSize:'0.75rem', color:'#64748b' }}>{({'Idealz Marino':'iDealz Marino','Idealz Liberty Plaza':'iSeven Mobile','Idealz Prime':'iDealz Prime'}[employee?.showroom]||employee?.showroom||'').replace('iDealz ','')} · {employee?.staffType==='backoffice'?'Back Office':'Showroom Staff'}</div>
+                <div style={{ fontSize:'0.95rem', fontWeight:600, color:'#0f172a' }}>{empId}</div>
+                <div style={{ fontSize:'0.75rem', color:'#64748b' }}>Enter your PIN to continue</div>
               </div>
             </div>
 
@@ -205,7 +252,7 @@ export default function Login() {
             </div>
 
             {error&&<div style={errorStyle}>{error}</div>}
-            <button style={{ ...btnPrimary, opacity:filled>=4?1:0.5 }} onClick={()=>checkPin()} disabled={filled<4||loading}>
+            <button style={{ ...btnPrimary, opacity:filled>=4&&!loading?1:0.5 }} onClick={()=>submit()} disabled={filled<4||loading}>
               {loading?'Verifying…':'🔐 Verify PIN'}
             </button>
             <button style={btnGhost} onClick={()=>{ setStep('id'); setPin(['','','','','','']); setError('') }}>
@@ -213,23 +260,23 @@ export default function Login() {
             </button>
           </>)}
 
-          {/* Step 3: Biometric */}
+          {/* Step 3: Device check */}
           {step==='bio'&&(
             <div style={{ textAlign:'center', padding:'20px 0' }}>
               <div style={{ width:100, height:100, borderRadius:'50%', border:`3px solid ${bioStatus==='success'?'#16a34a':bioStatus==='fail'?'#dc2626':'#1a6fe8'}`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:'2.8rem', margin:'0 auto 20px', background: bioStatus==='success'?'#dcfce7':bioStatus==='fail'?'#fee2e2':'#e8f1fd', transition:'all .3s' }}>
                 {bioStatus==='success'?'✅':bioStatus==='fail'?'❌':'👤'}
               </div>
               <h2 style={{ fontSize:'1.4rem', fontWeight:700, color:'#0f172a', marginBottom:8 }}>
-                {bioStatus==='scanning'?'Scan Face ID / Fingerprint':bioStatus==='success'?'Verified!':'Not matched'}
+                {bioStatus==='scanning'?'Confirm it is you':bioStatus==='success'?'Verified!':'Not matched'}
               </h2>
               <p style={{ color:'#64748b', fontSize:'0.85rem' }}>
-                {bioStatus==='scanning'?'Look at your camera or place finger on sensor':bioStatus==='success'?'Logging you in…':'Going back to PIN…'}
+                {bioStatus==='scanning'?'Face ID or fingerprint, if your device has it':bioStatus==='success'?'Signing you in…':'Going back to PIN…'}
               </p>
             </div>
           )}
 
           <div style={{ textAlign:'center', marginTop:32, fontSize:'0.72rem', color:'#94a3b8' }}>
-            Secured with PIN + Biometrics
+            PIN checked on our server · never stored in your browser
           </div>
         </div>
       </div>
