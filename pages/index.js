@@ -319,6 +319,9 @@ export default function Home() {
   const [newPin, setNewPin]     = useState('')
   const [editPinId, setEditPinId]   = useState(null)
   const [editPinVal, setEditPinVal] = useState('')
+  const [devEmpId, setDevEmpId]     = useState(null)   // which row has the device panel open
+  const [devInfo, setDevInfo]       = useState(null)   // {devices, biometricExempt}
+  const [devBusy, setDevBusy]       = useState(false)
   const [empSearch, setEmpSearch]   = useState('')
   const [empFilter, setEmpFilter]   = useState('all')
   const [archiveModal, setArchiveM] = useState(false)
@@ -329,6 +332,7 @@ export default function Home() {
   const [detecting, setDetecting]   = useState(false) // locating the branch on open
   const [detectFailed, setDetectFailed] = useState(false)
   const [awayFrom, setAwayFrom] = useState(null) // {room,distance} when not at any branch
+  const [atBranch, setAtBranch] = useState(null) // {room,distance} when inside one
 
   useEffect(()=>{
     setMounted(true)
@@ -353,16 +357,17 @@ export default function Home() {
         if(cancelled) return
         const found=findBranchAt(pos.lat,pos.lng)
         if(found){
-          setSelRoom(found.room); setAwayFrom(null)
+          setSelRoom(found.room); setAwayFrom(null); setAtBranch(found)
         } else {
           // Not inside any branch. Fall back to their own so the shift times
           // and the card still make sense, and record how far off they are so
           // the page can say so before they tap anything.
           setSelRoom(session.showroom)
+          setAtBranch(null)
           setAwayFrom(nearestBranch(pos.lat,pos.lng))
         }
       })
-      .catch(()=>{ if(!cancelled){ setSelRoom(session.showroom); setAwayFrom(null); setDetectFailed(true) } })
+      .catch(()=>{ if(!cancelled){ setSelRoom(session.showroom); setAwayFrom(null); setAtBranch(null); setDetectFailed(true) } })
       .then(()=>{ if(!cancelled) setDetecting(false) })
     return ()=>{ cancelled=true }
   }
@@ -782,6 +787,39 @@ export default function Home() {
     if (!r.ok) throw new Error(data?.error || 'Could not set the PIN.')
   }
 
+  // Device management. Admin only — the route checks the role claim on the
+  // Firebase ID token, so this cannot be reached by editing the page.
+  async function deviceAction(empIdValue, action) {
+    const token = await idToken()
+    if (!token) throw new Error('Your session expired. Sign in again.')
+    const r = await fetch('/api/devices', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ empId: empIdValue, action }),
+    })
+    const data = await r.json().catch(()=>({}))
+    if (!r.ok) throw new Error(data?.error || 'Could not update devices.')
+    return data
+  }
+
+  async function openDevices(empIdValue) {
+    if (devEmpId === empIdValue) { setDevEmpId(null); setDevInfo(null); return }
+    setDevEmpId(empIdValue); setDevInfo(null); setDevBusy(true)
+    try { setDevInfo(await deviceAction(empIdValue,'status')) }
+    catch(err){ showToast(err?.message||'Could not read device status.','error'); setDevEmpId(null) }
+    setDevBusy(false)
+  }
+
+  async function runDeviceAction(empIdValue, action) {
+    setDevBusy(true)
+    try {
+      const r = await deviceAction(empIdValue, action)
+      showToast('✅ '+(r.message||'Done'))
+      setDevInfo(await deviceAction(empIdValue,'status'))
+    } catch(err){ showToast(err?.message||'Could not update devices.','error') }
+    setDevBusy(false)
+  }
+
   async function addEmployee() {
     if(!newName||!newId) return showToast('Fill in name and Employee ID.','error')
     if(!newPin||newPin.length<4) return showToast('PIN must be at least 4 digits.','error')
@@ -941,10 +979,16 @@ export default function Home() {
             <span>Finding which branch you are at…</span>
           </div>
         )}
+        {session.role==='employee'&&!detecting&&atBranch&&atBranch.room===session.showroom&&(
+          <div style={{marginBottom:16,padding:'10px 16px',borderRadius:10,background:'#E1F5EE',border:'1px solid #B8E4D4',display:'flex',alignItems:'center',gap:10,fontSize:'0.82rem',color:'#0F6E56'}}>
+            <span style={{fontSize:'1.1rem'}}>✅</span>
+            <span>You are at <strong>{dn(atBranch.room)}</strong> — {atBranch.distance}m from the entrance. Ready to check in.</span>
+          </div>
+        )}
         {session.role==='employee'&&!detecting&&selRoom&&selRoom!==session.showroom&&(
           <div style={{marginBottom:16,padding:'10px 16px',borderRadius:10,background:'#fef3c7',border:'1px solid #fde68a',display:'flex',alignItems:'center',gap:10,fontSize:'0.82rem',color:'#92400e'}}>
             <span style={{fontSize:'1.1rem'}}>🔄</span>
-            <span>You are at <strong>{dn(selRoom)}</strong> today — covering, not your usual branch. Shift times follow {dnShort(selRoom)}.</span>
+            <span>You are at <strong>{dn(selRoom)}</strong> today{atBranch?` — ${atBranch.distance}m from the entrance`:''} — covering, not your usual branch. Shift times follow {dnShort(selRoom)}.</span>
           </div>
         )}
         {session.role==='employee'&&!detecting&&awayFrom&&(
@@ -1227,10 +1271,47 @@ export default function Home() {
                       <button onClick={()=>{setEditPinId(isEditing?null:e.id);setEditPinVal('')}} style={{flex:1,padding:'10px 8px',background:isEditing?'#fef3c7':'#f8fafc',border:'none',borderRight:'1px solid #e2e8f0',color:isEditing?'#92400e':'#1456b8',fontSize:'0.78rem',cursor:'pointer',fontWeight:600,fontFamily:"'Inter',sans-serif",textAlign:'center'}}>
                         🔑 {isEditing?'Cancel':'Change PIN'}
                       </button>
+                      <button onClick={()=>openDevices(e.empId)} style={{flex:1,padding:'10px 8px',background:devEmpId===e.empId?'#EFE9FB':'#f8fafc',border:'none',borderRight:'1px solid #e2e8f0',color:devEmpId===e.empId?'#5B3DB5':'#1456b8',fontSize:'0.78rem',cursor:'pointer',fontWeight:600,fontFamily:"'Inter',sans-serif",textAlign:'center'}}>
+                        📱 {devEmpId===e.empId?'Close':'Face ID'}
+                      </button>
                       <button onClick={()=>{if(window.confirm('Delete '+e.name+'? This cannot be undone.'))removeEmployee(e.id,e.name)}} style={{flex:1,padding:'10px 8px',background:'#fff5f5',border:'none',color:'#dc2626',fontSize:'0.78rem',cursor:'pointer',fontWeight:600,fontFamily:"'Inter',sans-serif",textAlign:'center'}}>
                         🗑️ Delete
                       </button>
                     </div>
+                    {devEmpId===e.empId&&(
+                      <div style={{padding:'12px 14px',background:'#F8F7FD',borderTop:'1px solid #E0D8F5',fontSize:'0.76rem',color:'#4A3B72'}}>
+                        {devBusy&&!devInfo
+                          ? <div style={{color:'#8A8982'}}>Checking…</div>
+                          : devInfo && <>
+                            <div style={{marginBottom:9,lineHeight:1.6}}>
+                              {devInfo.biometricExempt
+                                ? <><b>Face ID not required.</b> This account signs in with the PIN alone.</>
+                                : devInfo.devices > 0
+                                  ? <><b>1 device registered.</b> Face ID is required and only that device works.
+                                      {devInfo.lastUsedAt && <span style={{color:'#8A8982'}}> Last used {new Date(devInfo.lastUsedAt).toLocaleDateString('en-GB')}.</span>}</>
+                                  : <><b>No device registered.</b> Their next sign in will register the phone they are holding.</>}
+                            </div>
+                            <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                              {/* Use this when someone gets a new phone — their old credential is
+                                  cleared so the new device can enrol itself once. */}
+                              <button disabled={devBusy||devInfo.devices===0}
+                                onClick={()=>{if(window.confirm('Clear the registered device for '+e.name+'?\n\nTheir next sign in will register whatever phone they are holding.'))runDeviceAction(e.empId,'reset')}}
+                                style={{padding:'6px 12px',borderRadius:8,border:'1px solid #D5C8F0',background:devInfo.devices===0?'#F1EFE8':'#fff',color:devInfo.devices===0?'#B5B3AB':'#5B3DB5',fontSize:'0.74rem',cursor:devInfo.devices===0?'default':'pointer',fontFamily:'inherit'}}>
+                                Reset device
+                              </button>
+                              <button disabled={devBusy}
+                                onClick={()=>{
+                                  const on=!devInfo.biometricExempt
+                                  if(!on||window.confirm('Allow '+e.name+' to sign in with the PIN alone?\n\nOnly do this for a device with no Face ID or fingerprint reader.'))
+                                    runDeviceAction(e.empId, on?'exempt':'unexempt')
+                                }}
+                                style={{padding:'6px 12px',borderRadius:8,border:'1px solid #D5C8F0',background:devInfo.biometricExempt?'#FAEEDA':'#fff',color:devInfo.biometricExempt?'#854F0B':'#5B3DB5',fontSize:'0.74rem',cursor:'pointer',fontFamily:'inherit'}}>
+                                {devInfo.biometricExempt?'Require Face ID again':'Allow PIN only'}
+                              </button>
+                            </div>
+                          </>}
+                      </div>
+                    )}
                     {isEditing&&(
                       <div style={{padding:'10px 14px',background:'#fffbeb',borderTop:'1px solid #fde68a',display:'flex',gap:8,alignItems:'center'}}>
                         <input type="password" inputMode="numeric" placeholder="New PIN (4–6 digits)" value={editPinVal} onChange={e=>setEditPinVal(e.target.value.replace(/\D/g,'').slice(0,6))} maxLength={6} style={{flex:1,padding:'8px 12px',background:'#fff',border:'1.5px solid #fde68a',borderRadius:8,color:'#0f172a',fontFamily:"'Inter',sans-serif",fontSize:'14px',outline:'none'}}/>
