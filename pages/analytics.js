@@ -3,7 +3,7 @@ import Head from 'next/head'
 import { useRouter } from 'next/router'
 import { db } from '../lib/firebase'
 import { getSession, clearSession } from '../lib/auth'
-import { signOutEverywhere } from '../lib/ensureAuth'
+import { signOutEverywhere, ensureAuth } from '../lib/ensureAuth'
 import { collection, getDocs, query, where } from 'firebase/firestore'
 
 const SHOWROOMS = [
@@ -151,8 +151,11 @@ export default function Analytics() {
     const s = getSession()
     if (!s)                { setAllowed(false); router.replace('/login'); return }
     if (s.role !== 'admin'){ setAllowed(false); router.replace('/');      return }
-    setSession(s)
-    setAllowed(true)
+    // Also needs a live Firebase identity, or every query here is refused.
+    ensureAuth().then(user => {
+      if (!user) { clearSession(); setAllowed(false); router.replace('/login'); return }
+      setSession(s); setAllowed(true)
+    })
   }, [])
 
   // Every fetch below waits for `allowed`, so a non-admin never pulls staff
