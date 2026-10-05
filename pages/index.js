@@ -106,8 +106,10 @@ function initials(name='') { return name.split(' ').map(w=>w[0]).join('').slice(
 // Seconds past shift start before an arrival counts as late.
 // Keep this the same as GRACE_SEC in analytics.js.
 const GRACE_SEC = 60
-// Roles that attendance applies to. Admin/HR is left out so it does not
-// appear as absent every single day.
+// Roles that attendance applies to by default. 'admin' is not here because
+// the generic HR Admin account never clocks in and would read as absent every
+// day — but a real person who happens to be an admin still has to appear, so
+// anyone with an actual record is included regardless of role (see below).
 const ATT_ROLES = ['employee','manager','backoffice']
 
 // Records store HH:MM:SS, shifts store HH:MM. Seconds matter: without them
@@ -127,8 +129,12 @@ function buildDayRows(records, employees, room, empId) {
   // The roster is what generates rows, so the employee filter has to be applied
   // HERE. Filtering only the records leaves everyone else on the roster with a
   // row a day and no records to fill it, which reads as absent.
+  // Someone who has clocked in is staff, whatever their role says. This is
+  // what keeps an admin who actually works a shift (SHAROZE) in the reports
+  // while leaving the HR Admin account, which never clocks in, out of them.
+  const clocksIn = new Set(records.map(r => r.empId))
   const roster = employees
-    .filter(e => ATT_ROLES.includes(e.role||'employee'))
+    .filter(e => ATT_ROLES.includes(e.role||'employee') || clocksIn.has(e.empId))
     .filter(e => !empId || e.empId === empId)
   // A date counts as a working day only if something was recorded that day.
   // Walking the calendar instead would mark Poya days, Sundays and closures
@@ -1163,7 +1169,19 @@ export default function Home() {
         {rptView==='summary' && <div className="table-scroll">
           {loading?<div style={{textAlign:'center',padding:32,color:'#8A8982'}}>Loading…</div>
             :dayRows.length===0
-            ?<div style={{textAlign:'center',padding:32,color:'#8A8982',fontSize:'0.82rem'}}>No working days in this range.</div>
+            ?<div style={{textAlign:'center',padding:32,color:'#8A8982',fontSize:'0.82rem',lineHeight:1.7}}>
+               No rows for this range.
+               <div style={{marginTop:8,fontSize:'0.72rem',color:'#B5B3AB'}}>
+                 {/* Says which of the three inputs is missing, instead of leaving
+                     an empty table that could mean any of them. */}
+                 staff loaded: <b>{employees.length}</b> ·
+                 in attendance roster: <b>{employees.filter(e=>ATT_ROLES.includes(e.role||'employee')||allRecs.some(r=>r.empId===e.empId)).length}</b> ·
+                 records: <b>{allRecs.length}</b> ·
+                 dates: <b>{new Set(allRecs.map(r=>r.date).filter(Boolean)).size}</b>
+                 {fRoom && <> · branch filter: <b>{dnShort(fRoom)}</b></>}
+                 {fEmp && <> · employee filter: <b>{fEmp}</b></>}
+               </div>
+             </div>
             :<table style={{width:'100%',borderCollapse:'collapse',fontSize:'0.76rem',minWidth:1020}}>
               <thead><tr style={{borderBottom:'2px solid #E8E5DC'}}>
                 {['Date','Employee','Home','Worked at','Status','Arrive','Depart','Shift','Late','Early out','Leave','Work hrs','OT / short'].map(h=>(
