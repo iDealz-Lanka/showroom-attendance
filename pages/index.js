@@ -1178,7 +1178,6 @@ export default function Home() {
                  staffType:session.staffType, role:session.role }
           const rows = buildDayRows(myRecs, [meEmp], '', session.empId, myDays)
           const worked = rows.filter(r=>r['Arrive Time']!=='—')
-          const totalMin = worked.reduce((a,r)=>a+(r._workMin||0),0)
 
           if (myLoading) return <div style={{textAlign:'center',padding:40,color:'#8A8982'}}>Loading…</div>
           if (!rows.length) return (
@@ -1191,8 +1190,7 @@ export default function Home() {
           return (<>
             <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(130px,1fr))',gap:10,marginBottom:18}}>
               {[{l:'Present',v:worked.length,c:'#0F6E56'},
-                {l:'Absent',v:rows.length-worked.length,c:(rows.length-worked.length)?'#993C1D':'#8A8982'},
-                {l:'Total hours',v:fmtH(totalMin),c:'#201F1C'}].map(s=>(
+                {l:'Absent',v:rows.length-worked.length,c:(rows.length-worked.length)?'#993C1D':'#8A8982'}].map(s=>(
                 <div key={s.l} style={{background:'#fff',border:'1px solid #E8E5DC',borderRadius:10,padding:'11px 13px'}}>
                   <div style={{fontSize:'0.63rem',color:'#8A8982',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:4}}>{s.l}</div>
                   <div style={{fontSize:'1.25rem',fontWeight:700,color:s.c,lineHeight:1.1}}>{s.v}</div>
@@ -1232,7 +1230,6 @@ export default function Home() {
                                  borderTop:'1px solid #F1EFE8',paddingTop:9}}>
                       <span><span style={{color:'#8A8982'}}>In</span> <b style={{color:'#201F1C'}}>{r['Arrive Time']}</b></span>
                       <span><span style={{color:'#8A8982'}}>Out</span> <b style={{color:r['Depart Time']==='—'?'#B5B3AB':'#201F1C'}}>{r['Depart Time']==='—'?'not recorded':r['Depart Time']}</b></span>
-                      {r._workMin!=null && <span><span style={{color:'#8A8982'}}>Hours</span> <b style={{color:'#201F1C'}}>{r['Work Hours']}</b></span>}
                       {r['Short Leave']!=='—' && <span><span style={{color:'#8A8982'}}>Short leave</span> <b style={{color:'#201F1C'}}>{r['Short Leave']}</b></span>}
                     </div>
                   )}
