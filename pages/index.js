@@ -125,7 +125,7 @@ function fmtGap(sec){ if(!sec||sec<=0)return'—'; return sec<60?`${sec}s`:`${Ma
    Branch filtering happens HERE, per date, not on the records beforehand.
    A cover day is stored against the branch worked, so filtering records
    first would hide it and the person would read as absent at home. */
-function buildDayRows(records, employees, room, empId) {
+function buildDayRows(records, employees, room, empId, dateList) {
   // The roster is what generates rows, so the employee filter has to be applied
   // HERE. Filtering only the records leaves everyone else on the roster with a
   // row a day and no records to fill it, which reads as absent.
@@ -141,7 +141,12 @@ function buildDayRows(records, employees, room, empId) {
   // as absence for all 30 staff.
   // Every date the business recorded anything, for ALL staff — not just the
   // filtered person. Otherwise their absent days have no date to appear on.
-  const dates = [...new Set(records.map(r=>r.date).filter(Boolean))].sort()
+  //
+  // On the personal page the records passed in are one employee's only, so the
+  // working days have to come from elsewhere: /api/working-days supplies them.
+  const dates = (dateList && dateList.length)
+    ? [...dateList].sort()
+    : [...new Set(records.map(r=>r.date).filter(Boolean))].sort()
   const rows = []
 
   dates.forEach(date => {
@@ -325,6 +330,7 @@ export default function Home() {
   const [myFrom, setMyFrom]     = useState('')
   const [myTo, setMyTo]         = useState('')
   const [myRecs, setMyRecs]     = useState([])
+  const [myDays, setMyDays]     = useState([])   // dates the business was open
   const [myLoading, setMyLoad]  = useState(false)
   const [newName, setNewName]   = useState('')
   const [newId, setNewId]       = useState('')
@@ -427,6 +433,19 @@ export default function Home() {
       if(myFrom) d=d.filter(r=>r.date>=myFrom)
       if(myTo)   d=d.filter(r=>r.date<=myTo)
       setMyRecs(d)
+
+      // Which days did the business actually operate? Needed so a day this
+      // person missed still gets a row instead of silently disappearing.
+      try{
+        const token=await idToken()
+        const r=await fetch(`/api/working-days?from=${myFrom}&to=${myTo}`,
+          {headers:{Authorization:`Bearer ${token}`}})
+        const j=await r.json().catch(()=>({}))
+        setMyDays(r.ok && Array.isArray(j.dates) ? j.dates : [])
+      }catch(e){
+        console.warn('[my attendance] working days unavailable:',e)
+        setMyDays([])   // falls back to showing worked days only
+      }
     }catch(err){
       console.error('[my attendance] query refused:',err?.code||err)
       showToast('Could not load your attendance.','error')
@@ -1157,7 +1176,7 @@ export default function Home() {
           const meEmp = employees.find(e=>e.empId===session.empId)
             || { empId:session.empId, name:session.name, showroom:session.showroom,
                  staffType:session.staffType, role:session.role }
-          const rows = buildDayRows(myRecs, [meEmp], '', session.empId)
+          const rows = buildDayRows(myRecs, [meEmp], '', session.empId, myDays)
           const worked = rows.filter(r=>r['Arrive Time']!=='—')
           const totalMin = worked.reduce((a,r)=>a+(r._workMin||0),0)
 
