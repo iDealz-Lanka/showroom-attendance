@@ -321,6 +321,11 @@ export default function Home() {
   const [fTo, setFTo]           = useState(today())
   const [fType, setFType]       = useState('')
   const [rptView, setRptView]   = useState('summary') // summary = day rows, records = raw taps
+  // "My Attendance" — everyone's own history, whatever their role
+  const [myFrom, setMyFrom]     = useState('')
+  const [myTo, setMyTo]         = useState('')
+  const [myRecs, setMyRecs]     = useState([])
+  const [myLoading, setMyLoad]  = useState(false)
   const [newName, setNewName]   = useState('')
   const [newId, setNewId]       = useState('')
   const [newRoom, setNewRoom]   = useState('Idealz Marino')
@@ -402,6 +407,43 @@ export default function Home() {
   },[])
 
   useEffect(()=>{ if(!session) return; loadAll() },[session])
+
+  // Default the personal view to this month so it opens with something useful
+  useEffect(()=>{
+    if(!session||myFrom) return
+    const n=new Date()
+    setMyFrom(`${isoDay(n).slice(0,7)}-01`); setMyTo(isoDay(n))
+  },[session])
+
+  useEffect(()=>{ if(session&&tab==='mine'&&myFrom) loadMine() },[tab,myFrom,myTo])
+
+  // Only this person's records. The rules allow exactly this query and no
+  // wider one, so asking for anything else would be refused outright.
+  async function loadMine(){
+    setMyLoad(true)
+    try{
+      const s=await getDocs(query(collection(db,'records'),where('empId','==',session.empId)))
+      let d=s.docs.map(x=>({id:x.id,...x.data()}))
+      if(myFrom) d=d.filter(r=>r.date>=myFrom)
+      if(myTo)   d=d.filter(r=>r.date<=myTo)
+      setMyRecs(d)
+    }catch(err){
+      console.error('[my attendance] query refused:',err?.code||err)
+      showToast('Could not load your attendance.','error')
+    }
+    setMyLoad(false)
+  }
+
+  function myPreset(k){
+    const now=new Date(), t=isoDay(now)
+    const back=n=>{const d=new Date(now); d.setDate(d.getDate()-n); return isoDay(d)}
+    if(k==='week')      { const dow=(now.getDay()+6)%7; setMyFrom(back(dow)); setMyTo(t) }
+    if(k==='month')     { setMyFrom(`${isoDay(now).slice(0,7)}-01`); setMyTo(t) }
+    if(k==='lastmonth') { const d=new Date(now.getFullYear(),now.getMonth()-1,1)
+                          const end=new Date(now.getFullYear(),now.getMonth(),0)
+                          setMyFrom(isoDay(d)); setMyTo(isoDay(end)) }
+    if(k==='last30')    { setMyFrom(back(29)); setMyTo(t) }
+  }
   useEffect(()=>{ if(session&&tab==='report') loadReports() },[tab,fFrom,fTo])
 
   async function loadAll() {
@@ -917,6 +959,7 @@ export default function Home() {
         </div>
         <div className="desktop-tabs" style={S.tabs}>
           <button style={{...S.tab,...(tab==='checkin'?S.tabOn:{})}} onClick={()=>setTab('checkin')}>Check In/Out</button>
+          <button style={{...S.tab,...(tab==='mine'?S.tabOn:{})}} onClick={()=>setTab('mine')}>My Attendance</button>
           {canViewReports(session)&&<button style={{...S.tab,...(tab==='report'?S.tabOn:{})}} onClick={()=>setTab('report')}>Reports</button>}
           {canManageEmployees(session)&&<button style={{...S.tab,...(tab==='admin'?S.tabOn:{})}} onClick={()=>setTab('admin')}>Admin</button>}
           {session?.role==='admin'&&<a href="/analytics" style={{...S.tab,textDecoration:'none',display:'flex',alignItems:'center',color:'#64748b'}}>Analytics</a>}
@@ -1089,6 +1132,99 @@ export default function Home() {
             </div>
           </div>
         </div>
+      </div>}
+
+      {tab==='mine'&&<div className="page-content" style={S.page}>
+        <div className="page-h1" style={S.h1}>My Attendance</div>
+        <div style={S.sub}>{session.name} · {dn(session.showroom)} · your own record only</div>
+
+        <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:12,alignItems:'center'}}>
+          {[['week','This week'],['month','This month'],['lastmonth','Last month'],['last30','Last 30 days']].map(([k,l])=>(
+            <button key={k} onClick={()=>myPreset(k)} style={{padding:'6px 13px',borderRadius:16,border:'1px solid #E3E0D6',
+              background:'#F8F7F3',color:'#5F5E5A',fontSize:'0.76rem',cursor:'pointer',fontFamily:'inherit'}}>{l}</button>
+          ))}
+        </div>
+        <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:18}}>
+          <span style={{fontSize:'0.75rem',color:'#6B7280'}}>From</span>
+          <input type="date" style={{...S.sel,width:'auto',minWidth:140,marginBottom:0}} value={myFrom} max={myTo||undefined} onChange={e=>setMyFrom(e.target.value)}/>
+          <span style={{fontSize:'0.75rem',color:'#6B7280'}}>To</span>
+          <input type="date" style={{...S.sel,width:'auto',minWidth:140,marginBottom:0}} value={myTo} min={myFrom||undefined} onChange={e=>setMyTo(e.target.value)}/>
+        </div>
+
+        {(() => {
+          // Same engine the admin reports use, with the roster narrowed to one
+          // person — so the times here are the same times their manager sees.
+          const meEmp = employees.find(e=>e.empId===session.empId)
+            || { empId:session.empId, name:session.name, showroom:session.showroom,
+                 staffType:session.staffType, role:session.role }
+          const rows = buildDayRows(myRecs, [meEmp], '', session.empId)
+          const worked = rows.filter(r=>r['Arrive Time']!=='—')
+          const totalMin = worked.reduce((a,r)=>a+(r._workMin||0),0)
+
+          if (myLoading) return <div style={{textAlign:'center',padding:40,color:'#8A8982'}}>Loading…</div>
+          if (!rows.length) return (
+            <div style={{textAlign:'center',padding:40,color:'#8A8982',fontSize:'0.85rem',lineHeight:1.7}}>
+              No attendance recorded in this range.
+              <div style={{marginTop:6,fontSize:'0.74rem',color:'#B5B3AB'}}>{myRecs.length} record{myRecs.length===1?'':'s'} found</div>
+            </div>
+          )
+
+          return (<>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(130px,1fr))',gap:10,marginBottom:18}}>
+              {[{l:'Present',v:worked.length,c:'#0F6E56'},
+                {l:'Absent',v:rows.length-worked.length,c:(rows.length-worked.length)?'#993C1D':'#8A8982'},
+                {l:'Total hours',v:fmtH(totalMin),c:'#201F1C'}].map(s=>(
+                <div key={s.l} style={{background:'#fff',border:'1px solid #E8E5DC',borderRadius:10,padding:'11px 13px'}}>
+                  <div style={{fontSize:'0.63rem',color:'#8A8982',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:4}}>{s.l}</div>
+                  <div style={{fontSize:'1.25rem',fontWeight:700,color:s.c,lineHeight:1.1}}>{s.v}</div>
+                </div>
+              ))}
+            </div>
+
+            {/* Times only. No late / on-time judgement here — that belongs in
+                the manager's reports, not in someone's own daily record. */}
+            <div style={{display:'flex',flexDirection:'column',gap:9}}>
+              {rows.map((r,i)=>{
+                const noRecord = r['Arrive Time']==='—'
+                return (
+                <div key={i} style={{background:'#fff',border:'1px solid #E8E5DC',borderRadius:12,padding:'13px 15px'}}>
+                  <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,
+                               marginBottom:noRecord?0:10}}>
+                    <div>
+                      <div style={{fontSize:'0.88rem',fontWeight:600,color:'#201F1C'}}>
+                        {new Date(r.Date+'T00:00:00').toLocaleDateString('en-GB',{day:'numeric',month:'short'})}
+                        <span style={{color:'#8A8982',fontWeight:400,marginLeft:6,fontSize:'0.78rem'}}>{r.Day}</span>
+                      </div>
+                      <div style={{fontSize:'0.68rem',color:'#8A8982',marginTop:2}}>
+                        {r['Worked At']!=='—' ? r['Worked At'] : r['Home Branch']}
+                        {r._covering && <span style={{marginLeft:5,background:'#EFE9FB',color:'#5B3DB5',padding:'1px 6px',borderRadius:10}}>cover</span>}
+                      </div>
+                    </div>
+                    {/* Present or Absent only. Whether they were late is a
+                        management question, not part of their own day record. */}
+                    <span style={{fontSize:'0.7rem',fontWeight:600,whiteSpace:'nowrap',padding:'3px 10px',borderRadius:12,
+                      color:noRecord?'#993C1D':'#0F6E56', background:noRecord?'#FAECE7':'#E1F5EE'}}>
+                      {noRecord?'Absent':'Present'}
+                    </span>
+                  </div>
+
+                  {!noRecord && (
+                    <div style={{display:'flex',gap:16,flexWrap:'wrap',fontSize:'0.78rem',color:'#5F5E5A',
+                                 borderTop:'1px solid #F1EFE8',paddingTop:9}}>
+                      <span><span style={{color:'#8A8982'}}>In</span> <b style={{color:'#201F1C'}}>{r['Arrive Time']}</b></span>
+                      <span><span style={{color:'#8A8982'}}>Out</span> <b style={{color:r['Depart Time']==='—'?'#B5B3AB':'#201F1C'}}>{r['Depart Time']==='—'?'not recorded':r['Depart Time']}</b></span>
+                      {r._workMin!=null && <span><span style={{color:'#8A8982'}}>Hours</span> <b style={{color:'#201F1C'}}>{r['Work Hours']}</b></span>}
+                      {r['Short Leave']!=='—' && <span><span style={{color:'#8A8982'}}>Short leave</span> <b style={{color:'#201F1C'}}>{r['Short Leave']}</b></span>}
+                    </div>
+                  )}
+                  {r['Leave Reason']!=='—' && (
+                    <div style={{fontSize:'0.71rem',color:'#8A8982',marginTop:7,fontStyle:'italic'}}>{r['Leave Reason']}</div>
+                  )}
+                </div>)
+              })}
+            </div>
+          </>)
+        })()}
       </div>}
 
       {tab==='report'&&canViewReports(session)&&<div className="page-content" style={S.page}>
@@ -1451,6 +1587,7 @@ export default function Home() {
       <div className="bottom-nav">
         <div className="bottom-nav-inner">
           <button className={`bnav-btn${tab==='checkin'?' on':''}`} onClick={()=>setTab('checkin')}><span className="bnav-icon">👤</span><span>Check In</span></button>
+          <button className={`bnav-btn${tab==='mine'?' on':''}`} onClick={()=>setTab('mine')}><span className="bnav-icon">🗓️</span><span>My Days</span></button>
           {canViewReports(session)&&<button className={`bnav-btn${tab==='report'?' on':''}`} onClick={()=>setTab('report')}><span className="bnav-icon">📊</span><span>Reports</span></button>}
           {canManageEmployees(session)&&<button className={`bnav-btn${tab==='admin'?' on':''}`} onClick={()=>setTab('admin')}><span className="bnav-icon">👥</span><span>Admin</span></button>}
           {session?.role==='admin'&&<a href="/analytics" className="bnav-btn"><span className="bnav-icon">📈</span><span>Analytics</span></a>}
